@@ -602,6 +602,7 @@ class EntwurfSeite(Seite):
         self.anhang = label("", "gedimmt", True)
         # Ein Klick öffnet die Datei im Standardprogramm, damit du den Lebenslauf für die Stelle vor dem Senden siehst.
         self.anhang.setTextFormat(Qt.RichText)
+        self.anhang.setTextInteractionFlags(Qt.TextBrowserInteraction)  # sonst sind die Links nicht klickbar
         self.anhang.linkActivated.connect(lambda pfad: QDesktopServices.openUrl(QUrl.fromLocalFile(pfad)))
         rechts.lage.addWidget(self.anhang)
         reihe = QHBoxLayout()

@@ -10,7 +10,7 @@ import re
 import httpx
 import pytest
 
-from jobsuche import db, firmen, ki, mailkonten, person, profil, suche, versand
+from jobsuche import db, firmen, ki, mailkonten, person, profil, regeln, suche, versand
 from jobsuche.mailkonten import Konto
 from jobsuche import nacht, quellen, rag, stellen_cv
 
@@ -1549,3 +1549,30 @@ def test_claude_fehler_fuehren_zum_lokalen_modell(monkeypatch):
         assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "lokal"} and text in llm.AUSWEICHEN[-1]
     monkeypatch.setattr(llm, "claude_pfad", lambda: None)
     assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "lokal"} and "nicht installiert" in llm.AUSWEICHEN[-1]
+
+
+def test_eigene_kontaktdaten_in_der_signatur_sind_belegt(conn, entwurf):
+    person.speichere(conn, name="Test Person", email="ich@example.org", telefon="+49 170 123 456 78")
+    text = "Guten Tag Kim Test,\n\nIch suche eine neue Stelle.\n\nViele Grüße\nTest Person\n\nFon: +49 170 123 456 78\nE-Mail: ich@example.org"
+    ki.speichere_text(conn, entwurf, "Bewerbung", text)
+    assert not regeln.gesperrt(ki.pruefe_entwurf(conn, entwurf))
+    ki.speichere_text(conn, entwurf, "Bewerbung", text.replace("456", "999"))
+    assert any("999" in b.text for b in ki.pruefe_entwurf(conn, entwurf))
+
+
+def test_mail_auf_eine_anzeige_ist_keine_initiativbewerbung(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    client, _ = _netz_anzeige(ANZEIGE_TEXT + "\n\n## Dein Profil\n- Linux")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
+    chat = _Eignung({})
+    eid = ki.erstelle_entwurf(conn, fid, "m", chat)
+    system, nutzer = chat.prompts[-1]
+    assert "keine Initiativbewerbung" in system and "<stellenanzeige>" in nutzer and "- Linux" in nutzer
+    betreff = conn.execute("SELECT betreff FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
+    assert betreff.endswith("Bewerbung: IT-Servicetechniker (Ref. 10001-1003900685-S)") and "Initiativ" not in betreff
+    assert not any("Zahl" in b.text for b in ki.pruefe_entwurf(conn, eid))
+    andere = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    chat = _Eignung({})
+    ki.erstelle_entwurf(conn, andere, "m", chat)
+    assert "Initiativbewerbung" in chat.prompts[-1][0] and "<stellenanzeige>" not in chat.prompts[-1][1]

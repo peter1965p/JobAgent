@@ -506,6 +506,8 @@ def test_anhaenge_des_entwurfs_lassen_sich_vor_dem_senden_oeffnen(app, f, tmp_pa
     seite = f.stapel.currentWidget()
     text = seite.anhang.text()
     assert f'href="{cv}"' in text and "<s>weg.pdf</s> (fehlt)" in text
+    from PySide6.QtCore import Qt
+    assert seite.anhang.textInteractionFlags() & Qt.LinksAccessibleByMouse  # wirklich klickbar, nicht nur das Signal
     seite.anhang.linkActivated.emit(str(cv))
     assert geoeffnet == [str(cv)]
 
