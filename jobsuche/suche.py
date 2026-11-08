@@ -1,0 +1,603 @@
+"""Firmensuche über mehrere Quellen: Firmenverzeichnis, Internet und die Jobbörse der Bundesagentur für Arbeit.
+
+Die Quellen liefern Firmen. Inhaber und Mailadresse findet `hole_inhaber` auf den Firmenseiten selbst.
+"""
+
+import base64
+import hashlib
+import html
+import json
+import re
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+import httpx
+
+from . import config, db, firmen, ki, llm, profil, quellen, rag, regeln
+from .quellen import SucheFehler
+
+API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs"
+# Dieser Schlüssel ist öffentlich und gehört zur Web-Jobsuche der Bundesagentur. Er ist kein Geheimnis.
+API_SCHLUESSEL = "jobboerse-jobsuche"
+# Personalvermittler und Zeitarbeit taugen nicht für die Direktansprache der Geschäftsführung.
+VERMITTLER = re.compile(r"personal\s*(?:vermittlung|dienst|service|beratung|leasing|management)|zeitarbeit|arbeitnehmerüberlassung|"
+                        r"personalvermittl|recruiting|headhunt", re.I)
+ARBEITSZEIT = {"": "Voll- und Teilzeit", "vollzeit": "Vollzeit", "teilzeit": "Teilzeit"}
+ARBEITSZEIT_CODE = {"vollzeit": "vz", "teilzeit": "tz"}
+ANZEIGE = "https://www.arbeitsagentur.de/jobsuche/jobdetail/{}"
+ANZEIGEN_SUCHE = API  # Eigener Name, damit Tests diese Abfragen getrennt umleiten können.
+DETAILS = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/{}"
+MAX_ANZEIGE = 8000
+
+
+def _arbeitszeit(stelle: dict) -> str:
+    teilzeit = any(stelle.get(f"arbeitszeitTeilzeit{art}") for art in ("Abend", "Flexibel", "Nachmittag", "Vormittag"))
+    return ", ".join(name for name, gilt in (("Vollzeit", stelle.get("arbeitszeitVollzeit")), ("Teilzeit", teilzeit)) if gilt)
+
+
+def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None = None, arbeitszeit: str = "") -> list[dict]:
+    """`begriffe` darf mehrere Suchwörter enthalten, durch Kommas getrennt."""
+    woerter = [b.strip() for b in begriffe.split(",") if b.strip()]
+    if not woerter or not wo.strip():
+        raise SucheFehler("Gib einen Suchbegriff und einen Ort an.")
+    client = client or httpx.Client(timeout=30, headers={"User-Agent": config.USER_AGENT})
+    treffer: dict[str, dict] = {}
+    filter_zeit = {"arbeitszeit": ARBEITSZEIT_CODE[arbeitszeit]} if arbeitszeit else {}
+    for wort in woerter:
+        try:
+            antwort = client.get(API, headers={"X-API-Key": API_SCHLUESSEL}, params={
+                "was": wort, "wo": wo.strip(), "umkreis": umkreis, "size": 50, "page": 1, "angebotsart": 1, "pav": "false", "zeitarbeit": "false",
+                **filter_zeit,
+            })
+        except httpx.HTTPError as fehler:
+            raise SucheFehler(f"Die Jobbörse ist nicht erreichbar: {fehler}") from fehler
+        if antwort.status_code != 200:
+            raise SucheFehler(f"Die Jobbörse meldet {antwort.status_code}. Vielleicht hat sich die Schnittstelle geändert.")
+        for stelle in antwort.json().get("ergebnisliste", []):
+            referenz = stelle.get("referenznummer", "")
+            firma = str(stelle.get("firma", "")).strip()
+            if not referenz or not firma or referenz in treffer or VERMITTLER.search(firma):
+                continue
+            orte = stelle.get("stellenlokationen") or [{}]
+            treffer[referenz] = {
+                "referenz": referenz,
+                "firma": firma,
+                "titel": " · ".join(t for t in (str(stelle.get("stellenangebotsTitel", "")).strip(), _arbeitszeit(stelle)) if t),
+                "beruf": str(stelle.get("hauptberuf", "")).strip(),
+                "ort": (orte[0].get("adresse") or {}).get("ort", ""),
+                "entfernung": stelle.get("entfernung"),
+                "url": stelle.get("externeUrl") or ANZEIGE.format(referenz),
+                "website": "",
+                "quelle": "Jobbörse",
+            }
+    return list(treffer.values())
+
+
+BEGRIFFE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "berufe": {"type": "array", "items": {"type": "string"}},
+        "branche": {"type": "string", "enum": list(quellen.BRANCHEN)},
+    },
+    "required": ["berufe", "branche"],
+}
+MAX_BEGRIFFE = 6
+VERZEICHNIS_FRISCH = timedelta(days=7)  # Firmeneinträge ändern sich langsam, die OSM-Server sind oft überlastet.
+GLEICHZEITIGE_SEITEN = 8  # Jede Website wird nur einmal gleichzeitig abgerufen, belastet wird also keine einzelne.
+
+
+def _fakten_fuer_suche(conn: sqlite3.Connection) -> list[str]:
+    return [z[0] for z in conn.execute(
+        "SELECT text FROM fakten WHERE status = 'bestaetigt' AND kategorie != 'suche' ORDER BY kategorie, id")]
+
+
+def bereinige_begriffe(werte) -> list[str]:
+    """Kurze Berufsbezeichnungen ohne Doppelte. Sätze und interne Angaben fallen raus."""
+    ergebnis: list[str] = []
+    for wert in werte if isinstance(werte, list) else []:
+        text = re.sub(r"\s*\(?[mwd]/[mwd](?:/[mwd])?\)?", "", str(wert)).strip(" .,;")
+        if text and len(text.split()) <= 4 and not regeln.ist_sensibel(text) and text.lower() not in map(str.lower, ergebnis):
+            ergebnis.append(text)
+    return ergebnis[:MAX_BEGRIFFE]
+
+
+def leite_begriffe_ab(conn: sqlite3.Connection, modell: str, chat=llm.chat) -> list[str]:
+    """Das lokale Modell liest die bestätigten Fakten und nennt Berufe und Branche. Das Ergebnis bleibt gespeichert,
+    bis sich die Fakten ändern: Ein Modelllauf dauert auf der CPU Minuten."""
+    fakten = _fakten_fuer_suche(conn)
+    if not fakten:
+        raise SucheFehler("Noch keine bestätigten Fakten: Erst unter „Fakten“ oder im CV-Assistenten etwas eintragen.")
+    pruefsumme = hashlib.sha256("\n".join(fakten).encode()).hexdigest()
+    if db.einstellung(conn, "suche.fakten_stand", "") == pruefsumme and db.einstellung(conn, "suche.abgeleitet_branche", ""):
+        gespeichert = db.einstellung(conn, "suche.abgeleitet", "")
+        if gespeichert:
+            return gespeichert.split(", ")
+    system = (
+        "Du liest die Fakten über einen Bewerber und nennst Berufsbezeichnungen, unter denen er passende Stellen und "
+        f"Firmen findet. Höchstens {MAX_BEGRIFFE}, die passendsten zuerst, jeweils höchstens drei Wörter, so wie sie in "
+        "echten Stellenanzeigen stehen. Nur was die Fakten belegen, keine Wunschberufe. Wähle unter branche, wo solche "
+        "Firmen am ehesten zu finden sind."
+    )
+    antwort = chat(modell, system, "\n".join(f"- {f}" for f in fakten), BEGRIFFE_SCHEMA, 0.2)
+    begriffe = bereinige_begriffe(antwort.get("berufe"))
+    if not begriffe:
+        raise SucheFehler("Das Modell hat keine brauchbaren Berufe genannt. Trage Suchbegriffe von Hand ein.")
+    db.setze_einstellung(conn, "suche.abgeleitet", ", ".join(begriffe))
+    if antwort.get("branche") in quellen.BRANCHEN:
+        db.setze_einstellung(conn, "suche.abgeleitet_branche", antwort["branche"])
+    db.setze_einstellung(conn, "suche.fakten_stand", pruefsumme)
+    db.protokolliere(conn, "Suchbegriffe abgeleitet", f"{len(begriffe)} Begriffe, Modell {modell}")
+    return begriffe
+
+
+def suchort(conn: sqlite3.Connection) -> str:
+    """Der Ort aus dem Suchwunsch geht vor dem Wohnort: Wer umziehen will, sucht nicht zu Hause."""
+    for zeile in conn.execute("SELECT text FROM fakten WHERE status = 'bestaetigt' AND kategorie = 'suche' ORDER BY id"):
+        treffer = re.search(r"\b(?:Raum|Region|Großraum)\s+([A-ZÄÖÜ][\wäöüß-]+)", zeile[0])
+        if treffer:
+            return treffer.group(1)
+    zeile = conn.execute("SELECT ort FROM person WHERE id = 1").fetchone()
+    return re.split(r"[\s(,]", zeile[0])[0] if zeile and zeile[0] else ""
+
+
+@dataclass
+class Auftrag:
+    """`umkreis` 0 heißt: die ganze Region oder, ohne Ort, das ganze Land. `branche` leer: aus den Fakten."""
+    begriffe: str = ""
+    ort: str = ""
+    land: str = "de"
+    umkreis: int = 50
+    branche: str = ""
+    quellen: tuple[str, ...] = ("verzeichnis", "jobboerse", "arbeitnow")
+    searxng: str = ""
+    arbeitszeit: str = ""
+
+
+def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
+    """Die Angaben der Suchseite gelten auch für den Nachtlauf."""
+    lies = lambda name, vorgabe="": db.einstellung(conn, f"suche.{name}", vorgabe)
+    gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q)
+    return Auftrag(lies("begriffe"), lies("ort") or suchort(conn), lies("land", "de"), int(lies("umkreis", "50")),
+                   lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"))
+
+
+def _gleich(treffer: dict) -> str:
+    return regeln.kurzname(treffer["firma"]).lower()
+
+
+def _vereine(listen: list[list[dict]]) -> list[dict]:
+    """Dieselbe Firma aus zwei Quellen zählt einmal, die Website bleibt erhalten. Viele Anzeigen einer Firma deuten auf einen Konzern."""
+    ergebnis: dict[str, dict] = {}
+    anzahl: dict[str, int] = {}
+    for treffer in (t for liste in listen for t in liste):
+        anzahl[_gleich(treffer)] = anzahl.get(_gleich(treffer), 0) + 1
+        # Die Jobbörse filtert Vermittler selbst, die anderen Quellen nicht.
+        if VERMITTLER.search(treffer["firma"]):
+            continue
+        vorhanden = ergebnis.get(_gleich(treffer))
+        if not vorhanden:
+            ergebnis[_gleich(treffer)] = treffer
+        elif treffer["quelle"] not in vorhanden["quelle"]:
+            vorhanden["quelle"] += f", {treffer['quelle']}"
+            vorhanden["website"] = vorhanden["website"] or treffer["website"]
+    for schluessel, treffer in ergebnis.items():
+        merkmale = firmen.konzern_merkmale(treffer["firma"]) + ([treffer["konzern"]] if treffer.get("konzern") else [])
+        if anzahl[schluessel] >= 3:
+            merkmale.append(f"{anzahl[schluessel]} Anzeigen in dieser Suche")
+        treffer["konzern"] = ", ".join(dict.fromkeys(merkmale))
+    return list(ergebnis.values())
+
+
+def _sitz_der_website(website: str, land: str, client: httpx.Client) -> tuple[str, str, str, str] | None:
+    """(PLZ, Ort, Kurztext der Startseite, Konzernmerkmale aus dem Impressum). Der Schnipsel der Suchmaschine stammt oft vom
+    Impressum und sagt nichts über die Firma. None: Die Seite war nicht lesbar, das kann beim nächsten Mal anders sein."""
+    try:
+        seiten = firmen.hole_seiten(website, client, 2)
+    except (RuntimeError, httpx.HTTPError, httpx.InvalidURL, ValueError):
+        return None
+    kurz = firmen.kurztext(next(iter(seiten.values())), 160)
+    texte = {url: firmen.text_aus_html(html) for url, html in seiten.items()}
+    impressum = "\n".join(t for u, t in texte.items() if firmen.IMPRESSUM.search(u))
+    konzern = ", ".join(firmen.konzern_merkmale("", impressum))
+    for url in sorted(texte, key=lambda u: not firmen.IMPRESSUM.search(u)):
+        plz, ort = quellen.sitz_aus_text(texte[url], land)
+        if plz:
+            return plz, ort, kurz, konzern
+    return "", "", kurz, konzern
+
+
+def _sitze(conn: sqlite3.Connection, treffer: list[dict], land: str, client: httpx.Client) -> dict[str, tuple[str, str, str, str] | None]:
+    """Sitz je Website, gemerkte Antworten zuerst. Jede Suche soll dieselben kleinen Firmen nicht erneut abrufen."""
+    sitze, offen = {}, []
+    for t in treffer:
+        gemerkt = json.loads(db.einstellung(conn, f"cache.sitz.{land}.{firmen._host(t['website'])}", "") or "null")
+        # Einträge ohne Konzernmerkmale stammen aus einer älteren Version und werden neu gelesen.
+        if gemerkt and "konzern" in gemerkt and datetime.now() - datetime.fromisoformat(gemerkt["zeit"]) < VERZEICHNIS_FRISCH:
+            sitze[t["website"]] = (gemerkt["plz"], gemerkt["ort"], gemerkt["kurz"], gemerkt["konzern"])
+        else:
+            offen.append(t["website"])
+    with ThreadPoolExecutor(GLEICHZEITIGE_SEITEN) as pool:
+        gelesen = list(pool.map(lambda w: _sitz_der_website(w, land, client), offen))
+    for website, sitz in zip(offen, gelesen):
+        sitze[website] = sitz
+        if sitz:
+            db.setze_einstellung(conn, f"cache.sitz.{land}.{firmen._host(website)}",
+                                 json.dumps({"zeit": db.jetzt(), "plz": sitz[0], "ort": sitz[1], "kurz": sitz[2], "konzern": sitz[3]}, ensure_ascii=False))
+    return sitze
+
+
+def _koordinaten(conn: sqlite3.Connection, plz: str, land: str, client) -> tuple[float, float] | None:
+    schluessel = f"cache.plz.{land}.{plz}"
+    gemerkt = db.einstellung(conn, schluessel, "")
+    if gemerkt:
+        return json.loads(gemerkt)
+    punkt = quellen.koordinaten_der_plz(plz, land, client)
+    db.setze_einstellung(conn, schluessel, json.dumps(punkt))
+    return punkt
+
+
+def nur_im_gebiet(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftrag, melde=lambda _: None, client=None) -> tuple[list[dict], str]:
+    """Suchmaschinen kennen keinen Umkreis. Der Sitz aus dem Impressum entscheidet, ohne lesbare Adresse fliegt der Treffer raus."""
+    if not auftrag.ort.strip() or not treffer:
+        return treffer, ""
+    gebiet = quellen.finde_gebiet(auftrag.ort, auftrag.land, client)
+    melde(f"Prüfe den Firmensitz von {len(treffer)} Internet-Treffern")
+    netz = client or httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": config.USER_AGENT})
+    sitze = _sitze(conn, treffer, auftrag.land, netz)
+    bleiben, zu_weit, unklar = [], 0, 0
+    for t in treffer:
+        plz, ort, kurz, konzern = sitze[t["website"]] or ("", "", "", "")
+        punkt = _koordinaten(conn, plz, auftrag.land, client) if plz else None
+        if not punkt:
+            unklar += 1
+        elif not quellen.liegt_im_gebiet(gebiet, auftrag.umkreis, *punkt):
+            zu_weit += 1
+        else:
+            bleiben.append({**t, "ort": ort, "entfernung": quellen._km(gebiet.lat, gebiet.lon, *punkt), "titel": kurz or t["titel"], "konzern": konzern})
+    teile = [text for zahl, text in ((zu_weit, f"{zu_weit} außerhalb des Gebiets"), (unklar, f"{unklar} ohne lesbare Adresse")) if zahl]
+    return bleiben, f"Internet: aussortiert, weil der Firmensitz nicht passt: {', '.join(teile)}." if teile else ""
+
+
+def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: None, client=None) -> dict:
+    """Fällt eine Quelle aus, liefern die anderen weiter. Der Ausfall steht dann in `hinweise`."""
+    auftrag.begriffe = auftrag.begriffe.strip() or db.einstellung(conn, "suche.abgeleitet", "")
+    begriffe = [b.strip() for b in auftrag.begriffe.split(",") if b.strip()]
+    branche = auftrag.branche or db.einstellung(conn, "suche.abgeleitet_branche", "") or "alle"
+    listen, hinweise = [], []
+
+    def quelle(name, arbeit):
+        melde(f"Suche: {name}")
+        try:
+            listen.append(arbeit())
+        except SucheFehler as fehler:
+            hinweise.append(f"{name}: {fehler}")
+
+    if "verzeichnis" in auftrag.quellen:
+        def verzeichnis():
+            schluessel = "cache.verzeichnis." + hashlib.sha256(
+                f"{auftrag.ort.lower()}|{auftrag.land}|{auftrag.umkreis}|{branche}".encode()).hexdigest()[:24]
+            gemerkt = json.loads(db.einstellung(conn, schluessel, "") or "null")
+            if gemerkt and datetime.now() - datetime.fromisoformat(gemerkt["zeit"]) < VERZEICHNIS_FRISCH:
+                return gemerkt["treffer"]
+            try:
+                gebiet = quellen.finde_gebiet(auftrag.ort, auftrag.land, client)
+                gefunden = quellen.verzeichnis(gebiet, auftrag.umkreis, branche, client)
+            except SucheFehler:
+                if not gemerkt:
+                    raise
+                hinweise.append(f"Firmenverzeichnis: Server gerade überlastet, ich zeige den Stand vom {gemerkt['zeit'][:10]}.")
+                return gemerkt["treffer"]
+            if len(gefunden) >= quellen.MAX_VERZEICHNIS:
+                hinweise.append(f"Firmenverzeichnis: Nur die ersten {quellen.MAX_VERZEICHNIS} Einträge, das Gebiet ist groß.")
+            db.setze_einstellung(conn, schluessel, json.dumps({"zeit": db.jetzt(), "treffer": gefunden}, ensure_ascii=False))
+            return gefunden
+        quelle("Firmenverzeichnis", verzeichnis)
+    if "internet" in auftrag.quellen and auftrag.searxng.strip():
+        def internet():
+            passend, hinweis = nur_im_gebiet(conn, quellen.internet(begriffe, auftrag.ort, auftrag.land, auftrag.searxng, client), auftrag, melde, client)
+            if hinweis:
+                hinweise.append(hinweis)
+            return passend
+        quelle("Internet", internet)
+    if not begriffe and {"jobboerse", "arbeitnow"} & set(auftrag.quellen):
+        hinweise.append("Stellenbörsen übersprungen: Es fehlen noch Berufe. „Passende Firmen finden“ leitet sie aus deinen Fakten ab.")
+    elif "jobboerse" in auftrag.quellen:
+        if auftrag.land != "de":
+            hinweise.append("Jobbörse: Sie deckt nur Deutschland ab.")
+        else:
+            # Die Jobbörse kennt keine Regionen, 200 km ist ihr größter Umkreis.
+            quelle("Jobbörse", lambda: suche(auftrag.begriffe, auftrag.ort or "Deutschland", auftrag.umkreis or 200, client, auftrag.arbeitszeit))
+    if begriffe and "arbeitnow" in auftrag.quellen:
+        quelle("Arbeitnow", lambda: quellen.stellenportal(begriffe, auftrag.ort, client, auftrag.arbeitszeit))
+    if auftrag.arbeitszeit and {"verzeichnis", "internet"} & set(auftrag.quellen):
+        hinweise.append(f"Arbeitszeit: Verzeichnis und Internet liefern Firmen, keine Stellen. Dort gilt „{ARBEITSZEIT[auftrag.arbeitszeit]}“ nicht.")
+    # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
+    return {"treffer": bewerte_naehe(conn, _vereine(listen)), "hinweise": hinweise, "branche": branche}
+
+
+def finde_passende(conn: sqlite3.Connection, modell: str, auftrag: Auftrag | None = None, melde=lambda _: None,
+                   chat=llm.chat, client=None) -> dict:
+    """Der ganze Weg in einem Schritt: Fakten, Berufe, Branche, Ort, alle gewählten Quellen, Sortierung."""
+    auftrag = auftrag or Auftrag()
+    melde("Lese deine Fakten, das kann einige Minuten dauern")
+    begriffe = leite_begriffe_ab(conn, modell, chat)
+    auftrag.begriffe = ", ".join(begriffe)
+    auftrag.ort = auftrag.ort.strip() or suchort(conn)
+    if not auftrag.ort and not auftrag.umkreis == 0:
+        raise SucheFehler("Ich weiß nicht, wo du suchst. Trage den Ort ein oder wähle „Ganze Region“ für das ganze Land.")
+    ergebnis = suche_ueberall(conn, auftrag, melde, client)
+    return {**ergebnis, "begriffe": begriffe, "ort": auftrag.ort}
+
+
+def bekannte_firmen(conn: sqlite3.Connection) -> set[str]:
+    return {regeln.kurzname(z[0]).lower() for z in conn.execute("SELECT name FROM firmen")}
+
+
+def bewerte_naehe(conn: sqlite3.Connection, treffer: list[dict]) -> list[dict]:
+    """Sortiert nach der Nähe zu deinen Fakten, schnell und lokal über Embeddings. Das ersetzt keine Bewertung."""
+    if not treffer:
+        return []
+    bekannt = bekannte_firmen(conn)
+    vektoren = rag.embedde([f"{t['firma']} {t['titel']} {t['beruf']}" for t in treffer])
+    ergebnis = []
+    for stelle, vektor in zip(treffer, vektoren):
+        zeile = conn.execute(
+            "SELECT min(vec_distance_cosine(c.embedding, ?)) FROM chunks c JOIN fakten f ON f.id = c.fakt_id "
+            "WHERE c.art = 'fakt' AND f.status = 'bestaetigt'", (vektor,)).fetchone()
+        naehe = None if zeile[0] is None else max(0, round(100 * (1 - zeile[0])))
+        ergebnis.append({**stelle, "naehe": naehe, "bekannt": regeln.kurzname(stelle["firma"]).lower() in bekannt})
+    return sorted(ergebnis, key=lambda s: (s["bekannt"], bool(s.get("konzern")), -(s["naehe"] or 0)))
+
+
+def anzeigentext(stelle: dict, client=None) -> str:
+    """Volltext der Stellenanzeige. Arbeitnow liefert ihn mit der Liste, die Jobbörse auf Nachfrage. Ein Ausfall ist kein Fehler."""
+    referenz = str(stelle.get("referenz", ""))
+    if referenz.startswith("arbeitnow:"):
+        return firmen.text_aus_html(html.unescape(stelle.get("beschreibung", "")))[:MAX_ANZEIGE]
+    if not referenz or referenz.startswith(("osm:", "web:")):
+        return ""
+    client = client or httpx.Client(timeout=20, headers={"User-Agent": config.USER_AGENT})
+    try:
+        antwort = client.get(DETAILS.format(base64.b64encode(referenz.encode()).decode()), headers={"X-API-Key": API_SCHLUESSEL})
+        if antwort.status_code != 200:
+            return ""
+        return str(antwort.json().get("stellenangebotsBeschreibung") or "")[:MAX_ANZEIGE]
+    except (httpx.HTTPError, ValueError):
+        return ""
+
+
+def uebernimm(conn: sqlite3.Connection, stelle: dict, client=None) -> int:
+    """Legt die Firma an. Bei einer Stellenanzeige bleibt deren Text für Bewertung, Entwurf und Ansprechperson erhalten."""
+    if str(stelle.get("referenz", "")).startswith(("osm:", "web:")):
+        return firmen.lege_an(conn, stelle["firma"], website=stelle.get("website", ""), sitz=stelle.get("ort", ""),
+                              warum=stelle.get("titel", ""), quelle=stelle.get("quelle", "Suche"))
+    firma_id = firmen.lege_an(conn, stelle["firma"], website=stelle.get("website", ""), sitz=stelle.get("ort", ""),
+                              warum=f"Stelle: {stelle['titel']}", quelle=f"{stelle.get('quelle', 'Jobbörse')} {stelle['referenz']}")
+    text = f"Stellenangebot: {stelle['titel']}. Beruf: {stelle.get('beruf', '')}. Ort: {stelle.get('ort', '')}."
+    voll = anzeigentext(stelle, client)
+    stuecke = [text] + (rag.zerlege(voll) if voll else [])
+    rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[stelle["url"]] * len(stuecke), abruf=db.jetzt())
+    return firma_id
+
+
+def lade_anzeige_nach(conn: sqlite3.Connection, firma_id: int, client=None) -> bool:
+    """Firmen aus älteren Versionen haben von ihrer Jobbörsen-Anzeige nur den Titel."""
+    firma = conn.execute("SELECT quelle FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    treffer = re.match(r"Jobbörse (\S+)$", firma["quelle"] or "")
+    if not treffer:
+        return False
+    url = ANZEIGE.format(treffer.group(1))
+    if conn.execute("SELECT count(*) FROM chunks WHERE firma_id = ? AND quelle = ? AND text NOT LIKE 'Stellenangebot:%'",
+                    (firma_id, url)).fetchone()[0]:
+        return False
+    voll = anzeigentext({"referenz": treffer.group(1)}, client)
+    if not voll:
+        return False
+    stuecke = rag.zerlege(voll)
+    rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[url] * len(stuecke), abruf=db.jetzt())
+    return True
+
+
+MAX_ANZEIGEN_LADEN = 3
+
+
+def anzeigen_der_firma(name: str, client=None) -> tuple[list[str], int]:
+    """Laufende Anzeigen der Firma bei der Jobbörse: (Referenzen, Anzahl). Der Arbeitgeberfilter der Schnittstelle verlangt den
+    exakten Namen, darum sucht die App den Kurznamen im Volltext und prüft den Arbeitgeber selbst."""
+    kurz = regeln.kurzname(name)
+    if len(kurz) < 3:
+        return [], 0
+    client = client or httpx.Client(timeout=30, headers={"User-Agent": config.USER_AGENT})
+    try:
+        antwort = client.get(ANZEIGEN_SUCHE, headers={"X-API-Key": API_SCHLUESSEL},
+                             params={"was": kurz, "size": 50, "page": 1, "angebotsart": 1, "pav": "false"})
+        if antwort.status_code != 200:
+            return [], 0
+        liste = antwort.json().get("ergebnisliste", [])
+    except (httpx.HTTPError, ValueError):
+        return [], 0
+    passend = [s["referenznummer"] for s in liste if s.get("referenznummer") and quellen.name_passt(name, str(s.get("firma", "")))]
+    return passend, len(passend)
+
+
+def suche_anzeigen(conn: sqlite3.Connection, firma_id: int, client=None) -> int:
+    """Lädt bis zu drei laufende Anzeigen der Firma. Dort steht oft die Ansprechperson, die auf der Website fehlt."""
+    firma = conn.execute("SELECT name FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    referenzen, anzahl = anzeigen_der_firma(firma["name"], client)
+    for referenz in referenzen[:MAX_ANZEIGEN_LADEN]:
+        url = ANZEIGE.format(referenz)
+        if conn.execute("SELECT 1 FROM chunks WHERE firma_id = ? AND quelle = ?", (firma_id, url)).fetchone():
+            continue
+        voll = anzeigentext({"referenz": referenz}, client)
+        if voll:
+            stuecke = rag.zerlege(voll)
+            rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[url] * len(stuecke), abruf=db.jetzt())
+    if referenzen:
+        db.protokolliere(conn, "Anzeigen der Firma gefunden", f"{anzahl} bei der Jobbörse", firma_id)
+    return anzahl
+
+
+def _name_zur_mail(mail: str, text: str) -> str:
+    """Den Namen gibt es nur, wenn Vor- und Nachname aus der Adresse auch im Text stehen. Geraten wird nichts."""
+    teile = [t for t in re.split(r"[._-]", mail.split("@")[0]) if len(t) >= 2 and t.isalpha()]
+    if len(teile) < 2:
+        return ""
+    treffer = re.search(rf"(?<!\w){re.escape(teile[0])}\s+(?:\w+\s+)?{re.escape(teile[-1])}(?!\w)", text, re.I)
+    return treffer.group(0) if treffer else ""
+
+
+def kontakt_aus_anzeige(conn: sqlite3.Connection, firma_id: int) -> bool:
+    """Eine in der Anzeige genannte Person geht vor info@, aber nicht vor der persönlichen Adresse der Geschäftsführung.
+    Ohne lesbaren Namen füllt die Anzeige nur eine fehlende Adresse."""
+    firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    if firma["email"] and firmen.ist_persoenlich(firma["email"], firma["personen"]):
+        return False
+    stuecke = [z[0] for z in conn.execute("SELECT text FROM chunks WHERE art = 'firma' AND firma_id = ? AND "
+                                          "(quelle LIKE '%arbeitsagentur%' OR quelle LIKE '%arbeitnow%') ORDER BY id", (firma_id,))]
+    for stueck in stuecke:
+        for mail in firmen._mails(stueck):
+            if firmen.NEBENADRESSE.match(mail):
+                continue
+            name = _name_zur_mail(mail, stueck)
+            if not name and firma["email"]:
+                continue
+            personen = ", ".join(dict.fromkeys(p for p in [name, *(x.strip() for x in firma["personen"].split(","))] if p))
+            firmen.aendere(conn, firma_id, email=mail, personen=personen)
+            db.protokolliere(conn, "Kontakt aus Stellenanzeige", mail, firma_id)
+            return True
+    return False
+
+
+def finde_website(firma: str, ort: str, land: str, searxng: str, client) -> tuple[str, bool]:
+    """Liefert die Website und ob sie nur über den Domain-Test gefunden wurde, also besonders zu prüfen ist."""
+    website = quellen.website_aus_verzeichnis(firma, ort, land, client)
+    if not website and searxng:
+        website = quellen.website_aus_internet(firma, ort, land, searxng, client)
+    if website:
+        return website, False
+    client = client or httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": config.USER_AGENT})
+    website = firmen.teste_domains(firma, quellen.domain_kandidaten(firma), client, quellen.name_passt)
+    return website, bool(website)
+
+
+def hole_inhaber(conn: sqlite3.Connection, firma_id: int, land: str = "de", searxng: str = "", client=None) -> dict:
+    """Findet nötigenfalls die Website, lädt ihre Seiten und liest Inhaber und veröffentlichte Mailadresse aus."""
+    firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    website, fehler = firma["website"], None
+    if not website:
+        website, _ = finde_website(firma["name"], firma["sitz"], land, searxng, client)
+        if website:
+            firmen.aendere(conn, firma_id, website=website)
+        else:
+            fehler = SucheFehler(f"Zu {firma['name']} habe ich keine Website gefunden. Trage sie unter „Firmen“ selbst ein.")
+    if website:
+        try:
+            firmen.lade_seiten(conn, firma_id, client)
+        except RuntimeError as ausfall:
+            fehler = ausfall
+    # Die Ansprechperson aus der Anzeige hilft auch, wenn die Website fehlt oder ausfällt.
+    lade_anzeige_nach(conn, firma_id, client)
+    firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    anzeigen = 0
+    if not (firma["email"] and firmen.ist_persoenlich(firma["email"], firma["personen"])):
+        anzeigen = suche_anzeigen(conn, firma_id, client)
+    kontakt_aus_anzeige(conn, firma_id)
+    firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    if fehler and not firma["email"]:
+        raise fehler
+    konzern = ", ".join(firmen.konzern_merkmale(firma["name"], firmen.impressum_text(conn, firma_id), anzeigen))
+    return {"name": firma["name"], "personen": firma["personen"], "email": firma["email"],
+            "art": firmen.adressart(firma["email"], firma["personen"]), "website": firma["website"], "konzern": konzern}
+
+
+def uebernimm_und_finde(conn: sqlite3.Connection, stelle: dict, land: str = "de", searxng: str = "", client=None) -> dict:
+    """Die Firma bleibt auch dann in der Liste, wenn ihre Seiten nicht erreichbar sind."""
+    firma_id = uebernimm(conn, stelle, client)
+    try:
+        return hole_inhaber(conn, firma_id, land, searxng, client)
+    except (SucheFehler, RuntimeError) as fehler:
+        return {"name": stelle["firma"], "personen": "", "email": "", "art": "", "website": "", "konzern": "", "fehler": str(fehler)}
+
+
+def vorschau(treffer: dict, land: str = "de", searxng: str = "", client=None) -> dict:
+    """Zeigt die Firma, ohne sie in die Liste zu übernehmen. Ein Ausfall ist hier kein Fehler, sondern eine Auskunft."""
+    client = client or httpx.Client(follow_redirects=True, timeout=20, headers={"User-Agent": config.USER_AGENT})
+    ergebnis = {"website": treffer.get("website", ""), "personen": "", "email": "", "art": "", "kurztext": "", "stellen": [], "problem": "",
+                "geraten": False, "konzern": treffer.get("konzern", "")}
+    if not ergebnis["website"]:
+        ergebnis["website"], ergebnis["geraten"] = finde_website(treffer["firma"], treffer.get("ort", ""), land, searxng, client)
+    if not ergebnis["website"]:
+        ergebnis["problem"] = "Keine Website gefunden."
+        return ergebnis
+    try:
+        seiten = firmen.hole_seiten(ergebnis["website"], client, 4)
+    except RuntimeError:
+        ergebnis["problem"] = "Die Website ist gerade nicht erreichbar oder leitet auf eine fremde Domain um."
+        return ergebnis
+    texte = {url: firmen.text_aus_html(html) for url, html in seiten.items()}
+    kontakt = firmen.kontakt_aus_texten("\n".join(t for u, t in texte.items() if firmen.IMPRESSUM.search(u)), "\n".join(texte.values()),
+                                        firmen._host(ergebnis["website"]))
+    impressum = "\n".join(t for u, t in texte.items() if firmen.IMPRESSUM.search(u))
+    merkmale = [m for m in (treffer.get("konzern") or "").split(", ") if m] + firmen.konzern_merkmale(treffer["firma"], impressum)
+    ergebnis["konzern"] = ", ".join(dict.fromkeys(merkmale))
+    ergebnis.update(kontakt, art=firmen.adressart(kontakt["email"], kontakt["personen"]),
+                    kurztext=firmen.kurztext(next(iter(seiten.values()))), stellen=firmen.stellen_aus_text("\n".join(texte.values())))
+    return ergebnis
+
+
+def schlage_mail_vor(conn: sqlite3.Connection, firma_id: int, modell: str, land: str = "de", searxng: str = "",
+                     melde=lambda _: None, chat=llm.chat, client=None) -> int:
+    """Empfänger und komplette Mail in einem Schritt. Gesendet wird erst nach deiner Freigabe."""
+    firma = conn.execute("SELECT seiten_geladen, email FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    if not firma["seiten_geladen"] or not firma["email"]:
+        melde("Suche den Inhaber auf den Firmenseiten")
+        hole_inhaber(conn, firma_id, land, searxng, client)
+    if not conn.execute("SELECT email FROM firmen WHERE id = ?", (firma_id,)).fetchone()[0]:
+        raise ki.NichtMoeglich("Auf den Firmenseiten steht keine Mailadresse. Geratene Adressen nutzt die App nicht.")
+    melde("Schreibe die Mail, das kann einige Minuten dauern")
+    return ki.erstelle_entwurf(conn, firma_id, modell, chat=chat)
+
+
+def pruefe_eignung(conn: sqlite3.Connection, firma_id: int, modell: str, chat=llm.chat, client=None, melde=lambda _: None) -> dict:
+    """Wie `ki.pruefe_eignung`, lädt aber eine fehlende Anzeige vorher nach: aus der eigenen Referenz oder aus den
+    laufenden Anzeigen der Firma bei der Jobbörse."""
+    if not ki.anzeige_der_firma(conn, firma_id)[0]:
+        lade_anzeige_nach(conn, firma_id, client)
+    if not ki.anzeige_der_firma(conn, firma_id)[0]:
+        suche_anzeigen(conn, firma_id, client)
+    return ki.pruefe_eignung(conn, firma_id, modell, chat, melde)
+
+
+def sofort_bewerben(conn: sqlite3.Connection, treffer: dict, modell: str, land: str = "de", searxng: str = "",
+                    melde=lambda _: None, chat=llm.chat, client=None) -> dict:
+    """Übernehmen, Ansprechperson, Eignung und Entwurf in einem Schritt. Gesendet wird nichts, das bleibt dein Klick.
+    Bei geringer Eignung entsteht kein Entwurf: Der Modelllauf kostet Minuten und die Mail hätte wenig Aussicht."""
+    melde("Übernehme die Firma und suche die Ansprechperson")
+    vorhanden = conn.execute("SELECT id FROM firmen WHERE name = ?", (treffer["firma"],)).fetchone()
+    if vorhanden:
+        try:
+            kontakt = hole_inhaber(conn, vorhanden[0], land, searxng, client)
+        except (SucheFehler, RuntimeError) as fehler:
+            kontakt = {"email": "", "fehler": str(fehler)}
+    else:
+        kontakt = uebernimm_und_finde(conn, treffer, land, searxng, client)
+    firma_id = conn.execute("SELECT id FROM firmen WHERE name = ?", (treffer["firma"],)).fetchone()[0]
+    if not kontakt["email"]:
+        grund = kontakt.get("fehler") or "Weder Website noch Stellenanzeige nennen eine Adresse."
+        raise ki.NichtMoeglich(f"Keine veröffentlichte Mailadresse für {treffer['firma']}. {grund} Geratene Adressen nutzt die App nicht.")
+    ergebnis = {"firma_id": firma_id, "kontakt": kontakt, "eignung": None, "entwurf_id": None, "hinweis": "", "anhaenge": []}
+    melde("Prüfe deine Eignung anhand von Lebenslauf und Zeugnis, das kann einige Minuten dauern")
+    try:
+        ergebnis["eignung"] = pruefe_eignung(conn, firma_id, modell, chat, client, melde)
+    except ki.NichtMoeglich as grund:
+        ergebnis["hinweis"] = f"Eignung nicht geprüft: {grund}"
+    if ergebnis["eignung"] and ergebnis["eignung"]["score"] < ki.MIN_EIGNUNG:
+        ergebnis["hinweis"] = (f"Eignung {ergebnis['eignung']['score']} %, unter {ki.MIN_EIGNUNG} % schreibe ich keine Mail. "
+                               "Unter „Firmen“ kannst du sie trotzdem vorschlagen lassen.")
+        return ergebnis
+    melde("Schreibe die Mail, das kann einige Minuten dauern")
+    ergebnis["entwurf_id"] = ki.erstelle_entwurf(conn, firma_id, modell, chat=chat)
+    ergebnis["anhaenge"] = [p.name for p in profil.anhaenge_des_entwurfs(conn, ergebnis["entwurf_id"])]
+    return ergebnis

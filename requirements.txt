@@ -1,0 +1,15 @@
+jupyterlab
+pandas
+numpy
+matplotlib
+PySide6
+sqlite-vec
+fastembed
+pypdf
+python-docx
+httpx
+beautifulsoup4
+reportlab
+pytest
+keyring
+psutil

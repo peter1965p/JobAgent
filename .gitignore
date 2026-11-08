@@ -1,0 +1,12 @@
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+.env
+dist/
+.angular/
+
+# Persönliche Daten: nicht committen
+daten/
+GESPRAECHSPROTOKOLL.md
+werkzeuge/
