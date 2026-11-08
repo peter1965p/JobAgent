@@ -389,8 +389,16 @@ class FirmenSeite(Seite):
         self._mit_firma(arbeit, "Firma bewerten")
 
     def eignung(self):
+        fid = self.firma_id()
+        if fid is None:
+            return self.f.melde("Wähle zuerst eine Firma.")
         modell = self.f.modell()
-        self._mit_firma(lambda c, fid, fort: suche.pruefe_eignung(c, fid, modell, melde=fort), "Eignung prüfen")
+
+        def danach(eignung):
+            eignung = ergaenze_mit_rueckfrage(self.f, self.conn, fid, eignung)
+            self.f.melde(ki.eignung_text(eignung))
+            self.f.neu_laden()
+        self.f.starte("Eignung prüfen", lambda c, fort: suche.pruefe_eignung(c, fid, modell, melde=fort), nach=danach)
 
     def entwurf(self):
         fid = self.firma_id()
@@ -499,6 +507,59 @@ class FirmenSeite(Seite):
             return self.f.melde("Trage eine Bewertung von 0 bis 100 ein.")
         score, notiz = int(self.mein_score.text()), self.notiz.text()
         self.f.starte("Bewertung lernen", lambda conn, _: lernen.merke_bewertung(conn, fid, score, notiz))
+
+
+class NachfrageDialog(QDialog):
+    """Fragt nach, was die Prüfung in Lebenslauf und Zeugnis nicht gefunden hat. Leer heißt: trifft nicht zu."""
+
+    def __init__(self, punkte: list[str], eltern=None):
+        super().__init__(eltern)
+        self.setWindowTitle("Was fehlt, kannst du ergänzen")
+        self.resize(720, 560)
+        lage = QVBoxLayout(self)
+        lage.addWidget(label("Diese Anforderungen der Anzeige hat die Prüfung in deinen Unterlagen nicht oder nur teilweise "
+                             "gefunden. Trifft etwas zu, beschreib es kurz, zum Beispiel wo und seit wann. Deine Antwort "
+                             "wird ein bestätigter Fakt und steht als eigene Angabe im Lebenslauf für die Stelle. "
+                             "Leer lassen heißt: trifft nicht zu.", "gedimmt", True))
+        innen = QWidget()
+        form = QVBoxLayout(innen)
+        self.felder: dict[str, QLineEdit] = {}
+        for punkt in punkte:
+            form.addWidget(label(punkt, "", True))
+            feld = QLineEdit()
+            feld.setMaxLength(ki.MAX_ANTWORT)
+            feld.setPlaceholderText("Trifft zu? Kurz beschreiben, sonst leer lassen")
+            form.addWidget(feld)
+            self.felder[punkt] = feld
+        form.addStretch()
+        rollen = QScrollArea()
+        rollen.setWidgetResizable(True)
+        rollen.setWidget(innen)
+        lage.addWidget(rollen, 1)
+        knoepfe = QDialogButtonBox()
+        knoepfe.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
+        knoepfe.addButton("Überspringen", QDialogButtonBox.RejectRole)
+        knoepfe.accepted.connect(self.accept)
+        knoepfe.rejected.connect(self.reject)
+        lage.addWidget(knoepfe)
+
+    def antworten(self) -> dict[str, str]:
+        return {punkt: feld.text().strip() for punkt, feld in self.felder.items() if feld.text().strip()}
+
+
+def ergaenze_mit_rueckfrage(f, conn, firma_id: int, eignung: dict) -> dict:
+    """Zeigt offene Anforderungen zum Ergänzen. Ohne Antwort bleibt die Eignung, wie sie ist."""
+    punkte = ki.offene_punkte(eignung)
+    if not punkte:
+        return eignung
+    antworten = f.nachfragen(punkte)
+    if not antworten:
+        return eignung
+    try:
+        return ki.ergaenze_eignung(conn, firma_id, antworten)
+    except (ki.NichtMoeglich, ValueError) as fehler:
+        f.melde(str(fehler))
+        return eignung
 
 
 def anhang_links(pfade) -> str:
@@ -1108,8 +1169,21 @@ class SucheSeite(Seite):
         stelle = self._gewaehlt()
         if stelle:
             modell, land, searxng = self.f.modell(), self.land.currentData(), self.searxng.text().strip()
-            self.f.starte("Sofort bewerben", lambda conn, fort: suche.sofort_bewerben(conn, stelle, modell, land, searxng, fort),
-                          nach=self.beworben)
+            self.f.starte("Sofort bewerben", lambda conn, fort: suche.sofort_bewerben(conn, stelle, modell, land, searxng, fort,
+                                                                                     mit_entwurf=False),
+                          nach=lambda ergebnis: self._sofort_geprueft(ergebnis, modell))
+
+    def _sofort_geprueft(self, ergebnis, modell):
+        """Erst fragt die App nach, was in den Unterlagen fehlt, dann schreibt sie die Mail."""
+        fid = ergebnis["firma_id"]
+        if ergebnis["eignung"]:
+            ergebnis["eignung"] = ergaenze_mit_rueckfrage(self.f, self.conn, fid, ergebnis["eignung"])
+        eignung, hinweis = ergebnis["eignung"], ergebnis["hinweis"]
+
+        def schreiben(conn, fort):
+            neu = suche.schreibe_bewerbung(conn, fid, modell, eignung, fort)
+            return {**ergebnis, **neu, "hinweis": neu.get("hinweis") or hinweis}
+        self.f.starte("Mail schreiben", schreiben, nach=self.beworben)
 
     def beworben(self, ergebnis):
         teile = [ki.eignung_text(ergebnis["eignung"])] if ergebnis["eignung"] else []
@@ -1552,6 +1626,8 @@ class CVSeite(Seite):
         reihe = QHBoxLayout()
         reihe.addWidget(knopf("Speichern, weitere eintragen", self.station_speichern, True))
         reihe.addWidget(knopf("Das war alles", self.station_fertig))
+        self.claude_station = knopf("Mit Claude formulieren", lambda: self.formulieren(self.station_details))
+        reihe.addWidget(self.claude_station)
         lage.addLayout(reihe)
         return seite
 
@@ -1564,6 +1640,8 @@ class CVSeite(Seite):
         reihe = QHBoxLayout()
         reihe.addWidget(knopf("Weiter", self.text_speichern, True))
         reihe.addWidget(knopf("Überspringen", self.text_ueberspringen))
+        self.claude_text = knopf("Mit Claude formulieren", lambda: self.formulieren(self.antwort))
+        reihe.addWidget(self.claude_text)
         lage.addLayout(reihe)
         return seite
 
@@ -1581,7 +1659,23 @@ class CVSeite(Seite):
         lage.addStretch()
         return seite
 
+    def formulieren(self, feld):
+        """Claude glättet die Antwort im Feld. Der Vorschlag ersetzt den Text erst im Feld, gespeichert wird mit „Weiter“."""
+        if not self.schritt:
+            return
+        text, modell, frage = feld.toPlainText(), self.f.modell(), self.schritt.frage
+        if not text.strip():
+            return self.f.melde("Schreib erst etwas, dann kann Claude es formulieren.")
+        kontext = " · ".join(t for t in (self.station["titel"].text(), self.station["organisation"].text(),
+                                         self.station["von"].text(), self.station["bis"].text()) if t.strip()) \
+            if feld is self.station_details else ""
+        self.f.starte("Mit Claude formulieren", lambda _c, _f: cv.formuliere(modell, frage, text, kontext),
+                      nach=lambda neu: feld.setPlainText(neu))
+
     def aktualisieren(self):
+        mit_claude = llm.ist_claude(self.f.modell())
+        self.claude_text.setVisible(mit_claude)
+        self.claude_station.setVisible(mit_claude)
         self.schritt = cv.naechster_schritt(self.conn)
         s = self.schritt
         if s is None:
@@ -1796,14 +1890,14 @@ class GelerntSeite(Seite):
 
 class SystemSeite(Seite):
     titel = "System"
-    untertitel = "Lokales Modell und Datenablage"
+    untertitel = "Sprachmodell und Datenablage"
 
     def __init__(self, f):
         super().__init__(f)
         raster = QGridLayout(self)
         raster.setContentsMargins(0, 0, 0, 0)
         raster.setSpacing(18)
-        modell = Karte("Lokales LLM (Ollama)")
+        modell = Karte("Sprachmodell")
         self.status = label("", "gedimmt", True)
         modell.lage.addWidget(self.status)
         self.auswahl = QComboBox()
@@ -1825,10 +1919,23 @@ class SystemSeite(Seite):
         except llm.LLMFehler as fehler:
             namen = []
             self.status.setText(str(fehler))
+        claude = llm.claude_status()
+        if not claude:
+            namen = [*llm.CLAUDE_MODELLE, *namen]
+            stand = llm.claude_nutzung()
+            werte = ", ".join(f"{n} {round((stand.get(k) or {}).get('utilization', 0) * 100)} %"
+                              for k, n in (("five_hour", "5 Stunden"), ("seven_day", "Woche")) if k in stand)
+            self.status.setText(
+                self.status.text() + " Claude Code ist angemeldet: Bei „claude:“ gehen Unterlagen, Fakten und Anzeigen an "
+                f"Anthropic. Ab {round(llm.CLAUDE_GRENZE * 100)} % Kontingent nimmt die App das lokale Modell"
+                + (f", zuletzt {werte}." if werte else ".") + (f" {llm.claude_gesperrt()}" if llm.claude_gesperrt() else ""))
+        else:
+            self.status.setText(self.status.text() + f" {claude}")
         self.auswahl.addItems(namen or [aktuell])
         self.auswahl.setCurrentText(aktuell)
         if namen and aktuell not in namen:
-            self.status.setText(f"Modell {aktuell} fehlt: ollama pull {aktuell}")
+            self.status.setText(f"Modell {aktuell} fehlt: " + ("Claude Code anmelden" if llm.ist_claude(aktuell)
+                                                                else f"ollama pull {aktuell}"))
 
     def waehle(self):
         db.setze_einstellung(self.conn, "modell", self.auswahl.currentText())
@@ -1991,6 +2098,20 @@ class Hauptfenster(QMainWindow):
     def modell(self) -> str:
         return db.einstellung(self.conn, "modell", config.STANDARD_MODELL)
 
+    def biete_claude_an(self) -> None:
+        """Einmal pro Person: Ist Claude Code angemeldet, fragt die App, ob sie es statt des lokalen Modells nutzen darf."""
+        if config.DEMO or llm.ist_claude(self.modell()) or db.einstellung(self.conn, "claude.gefragt", ""):
+            return
+        if llm.claude_status():
+            return
+        db.setze_einstellung(self.conn, "claude.gefragt", db.jetzt())
+        if self.frage("Claude Code ist auf diesem Rechner angemeldet. Soll Job Agent Claude für Eignungsprüfung, "
+                      "Firmenbewertung und Mailtexte nutzen? Das ist deutlich genauer und schneller als das lokale Modell.\n\n"
+                      "Dabei gehen Lebenslauf, Zeugnis, bestätigte Fakten und Stellenanzeigen an Anthropic, über dein Abo. "
+                      "Gesendet wird weiter nur auf deinen Klick. Zurück zum lokalen Modell geht es jederzeit unter „System“."):
+            db.setze_einstellung(self.conn, "modell", llm.CLAUDE_MODELLE[0])
+            self.neu_laden()
+
     def zeige(self, index: int):
         self.stapel.setCurrentIndex(index)
         self.gruppe.button(index).setChecked(True)
@@ -2063,6 +2184,10 @@ class Hauptfenster(QMainWindow):
 
     def frage(self, text) -> bool:
         return QMessageBox.question(self, "Job Agent", text) == QMessageBox.Yes
+
+    def nachfragen(self, punkte: list[str]) -> dict[str, str] | None:
+        dialog = NachfrageDialog(punkte, self)
+        return dialog.antworten() if dialog.exec() == QDialog.Accepted else None
 
     def frage_passwort(self, konto) -> str | None:
         passwort, ok = QInputDialog.getText(self, "Mailkonto", f"Passwort für {konto.benutzer} auf {konto.host}:",
@@ -2173,6 +2298,7 @@ class Sitzung:
             elif anmelden.warnung:
                 self.fenster.melde(anmelden.warnung)
         self.fenster.show()
+        self.fenster.biete_claude_an()
 
     def abgemeldet(self):
         self.fenster.conn.close()

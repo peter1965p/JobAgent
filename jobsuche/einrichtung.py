@@ -75,6 +75,7 @@ def schluesselbund_da() -> bool:
 def pruefe(system: System) -> list[Pruefung]:
     ollama = shutil.which("ollama") is not None
     laeuft = ollama_laeuft()
+    claude = llm.claude_status()
     ergebnis = [
         Pruefung("ram", "Arbeitsspeicher", system.ram_gb >= MIN_RAM_GB, f"{system.ram_gb:.0f} GB"
                  + ("" if system.ram_gb >= MIN_RAM_GB else f", ab {MIN_RAM_GB} GB läuft das LLM flüssiger"), pflicht=False),
@@ -84,6 +85,8 @@ def pruefe(system: System) -> list[Pruefung]:
         Pruefung("dienst", "Ollama-Dienst", laeuft, "läuft" if laeuft else "läuft nicht"),
         Pruefung("modell", "Sprachmodell", sprachmodell_da(), "vorhanden" if sprachmodell_da() else f"{config.STANDARD_MODELL} fehlt"),
         Pruefung("embedding", "Suchmodell", embedding_da(), "vorhanden" if embedding_da() else "fehlt, rund 240 MB"),
+        Pruefung("claude", "Claude Code (optional)", not claude, claude or "angemeldet, lässt sich unter „System“ wählen",
+                 pflicht=False),
         Pruefung("schluesselbund", "Schlüsselbund", schluesselbund_da(),
                  "verfügbar" if schluesselbund_da() else "fehlt, Passwörter lassen sich dann nicht merken", pflicht=False),
     ]

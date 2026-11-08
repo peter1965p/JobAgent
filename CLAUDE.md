@@ -4,7 +4,7 @@ Peter schreibt Deutsch und nennt Claude „Krebsi“. Er ist ITler: knapp und te
 
 Lies zuerst `GESPRAECHSPROTOKOLL.md`. Dort stehen Stand, Fakten für Bewerbungen, offene Punkte, Firmen und die Nachrichten.
 
-Die App heißt Job Agent (früher Türöffner) und liegt in `jobsuche/` (der Modulname bleibt), siehe `README.md`. Das LLM läuft nur lokal über Ollama, Cloud-Anbieter sind ausgeschlossen. Die App ist für beliebige Personen gebaut: Im Code stehen keine persönlichen Daten, ein Test prüft das. Jede Person meldet sich mit Mailadresse und Mailpasswort an und hat eine eigene SQLite-Datei. Peters echte Daten stehen in `daten/`: Bestätigen, Freigeben und Ergebnisse gehören ihm, Tests laufen auf einer Kopie.
+Die App heißt Job Agent (früher Türöffner) und liegt in `jobsuche/` (der Modulname bleibt), siehe `README.md`. Das LLM läuft lokal über Ollama oder, wenn die Person es wählt, über Claude Code (ihr Abo, per CLI). Die App fragt dafür einmal nach Zustimmung, weil dann Unterlagen an Anthropic gehen. Andere Cloud-Anbieter sind ausgeschlossen, Tests rufen Claude nie auf. Die App ist für beliebige Personen gebaut: Im Code stehen keine persönlichen Daten, ein Test prüft das. Jede Person meldet sich mit Mailadresse und Mailpasswort an und hat eine eigene SQLite-Datei. Peters echte Daten stehen in `daten/`: Bestätigen, Freigeben und Ergebnisse gehören ihm, Tests laufen auf einer Kopie.
 
 Der Versand spricht echte Server an: Tests laufen nur mit dem Fake-Server, echte Mails löst nur Peter aus.
 

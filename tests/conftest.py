@@ -51,17 +51,23 @@ def kein_echter_datenordner(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def keine_echten_systemeingriffe(monkeypatch):
+def keine_echten_systemeingriffe(monkeypatch, tmp_path_factory):
     """Tests dürfen nie Administratorrechte anfordern, Dienste starten oder wirklich installieren."""
     echt = subprocess.Popen
 
     def wache(befehl, *args, **kwargs):
         name = Path(str(befehl[0] if isinstance(befehl, (list, tuple)) else befehl)).name
-        if name in ("pkexec", "sudo", "systemctl", "ollama", "pacman", "winget", "brew"):
+        if name in ("pkexec", "sudo", "systemctl", "ollama", "pacman", "winget", "brew", "claude"):
             raise AssertionError(f"Test wollte wirklich ausführen: {befehl}")
         return echt(befehl, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", wache)
+    # Claude ginge an Anthropic und kostet Kontingent. Tests sehen es nie als verfügbar.
+    from jobsuche import llm
+    monkeypatch.setattr(llm, "claude_status", lambda: "Claude Code ist nicht installiert.")
+    ordner = tmp_path_factory.mktemp("claude")
+    monkeypatch.setattr(llm, "_ordner", lambda: ordner)  # Nutzungsstand der echten App bleibt unberührt
+    monkeypatch.setattr(llm, "AUSWEICHEN", [])
 
 
 @pytest.fixture

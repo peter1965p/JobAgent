@@ -571,7 +571,7 @@ def pruefe_eignung(conn: sqlite3.Connection, firma_id: int, modell: str, chat=ll
 
 
 def sofort_bewerben(conn: sqlite3.Connection, treffer: dict, modell: str, land: str = "de", searxng: str = "",
-                    melde=lambda _: None, chat=llm.chat, client=None) -> dict:
+                    melde=lambda _: None, chat=llm.chat, client=None, mit_entwurf: bool = True) -> dict:
     """Übernehmen, Ansprechperson, Eignung und Entwurf in einem Schritt. Gesendet wird nichts, das bleibt dein Klick.
     Bei geringer Eignung entsteht kein Entwurf: Der Modelllauf kostet Minuten und die Mail hätte wenig Aussicht."""
     melde("Übernehme die Firma und suche die Ansprechperson")
@@ -593,11 +593,20 @@ def sofort_bewerben(conn: sqlite3.Connection, treffer: dict, modell: str, land: 
         ergebnis["eignung"] = pruefe_eignung(conn, firma_id, modell, chat, client, melde)
     except ki.NichtMoeglich as grund:
         ergebnis["hinweis"] = f"Eignung nicht geprüft: {grund}"
-    if ergebnis["eignung"] and ergebnis["eignung"]["score"] < ki.MIN_EIGNUNG:
-        ergebnis["hinweis"] = (f"Eignung {ergebnis['eignung']['score']} %, unter {ki.MIN_EIGNUNG} % schreibe ich keine Mail. "
-                               "Unter „Firmen“ kannst du sie trotzdem vorschlagen lassen.")
-        return ergebnis
-    melde("Schreibe die Mail, das kann einige Minuten dauern")
-    ergebnis["entwurf_id"] = ki.erstelle_entwurf(conn, firma_id, modell, chat=chat)
-    ergebnis["anhaenge"] = [p.name for p in profil.anhaenge_des_entwurfs(conn, ergebnis["entwurf_id"])]
+    if not mit_entwurf:
+        return ergebnis  # Die Oberfläche fragt erst Offenes nach und ruft dann `schreibe_bewerbung`.
+    ergebnis.update(schreibe_bewerbung(conn, firma_id, modell, ergebnis["eignung"], melde, chat))
     return ergebnis
+
+
+def schreibe_bewerbung(conn: sqlite3.Connection, firma_id: int, modell: str, eignung: dict | None,
+                       melde=lambda _: None, chat=llm.chat) -> dict:
+    """Zweiter Teil von „Sofort bewerben“: die Mail samt Lebenslauf für die Stelle, außer die Eignung ist zu gering."""
+    if eignung and eignung["score"] < ki.MIN_EIGNUNG:
+        return {"entwurf_id": None, "anhaenge": [], "eignung": eignung,
+                "hinweis": (f"Eignung {eignung['score']} %, unter {ki.MIN_EIGNUNG} % schreibe ich keine Mail. "
+                            "Unter „Firmen“ kannst du sie trotzdem vorschlagen lassen.")}
+    melde("Schreibe die Mail, das kann einige Minuten dauern")
+    entwurf_id = ki.erstelle_entwurf(conn, firma_id, modell, chat=chat)
+    return {"entwurf_id": entwurf_id, "anhaenge": [p.name for p in profil.anhaenge_des_entwurfs(conn, entwurf_id)],
+            "eignung": eignung}

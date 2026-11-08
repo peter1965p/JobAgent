@@ -508,3 +508,53 @@ def test_anhaenge_des_entwurfs_lassen_sich_vor_dem_senden_oeffnen(app, f, tmp_pa
     assert f'href="{cv}"' in text and "<s>weg.pdf</s> (fehlt)" in text
     seite.anhang.linkActivated.emit(str(cv))
     assert geoeffnet == [str(cv)]
+
+
+def test_eignung_fragt_offenes_nach_und_uebernimmt_die_antwort(app, f, monkeypatch):
+    import json
+    from jobsuche import ki, suche
+    from PySide6.QtWidgets import QLineEdit
+    fid = f.conn.execute("INSERT INTO firmen (name, email) VALUES ('X GmbH', 'a@x.de')").lastrowid
+    f.conn.commit()
+    eignung = {"score": 0, "erfuellt": [], "teilweise": [], "fehlt": ["MS Office"], "selbst": [], "cv": [], "nachweise": [],
+               "anzeige": "", "modell": "m", "zeit": ""}
+
+    def pruefe(conn, firma_id, modell, melde=None):
+        conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps(eignung), firma_id))
+        conn.commit()
+        return eignung
+    monkeypatch.setattr(suche, "pruefe_eignung", pruefe)
+    gefragt = []
+    f.nachfragen = lambda punkte: gefragt.append(punkte) or {"MS Office": "Office seit Version 1, zuletzt Microsoft 365"}
+    f.zeige_seite(fenster.FirmenSeite)
+    seite = f.stapel.currentWidget()
+    seite.firma_id = lambda: fid
+    seite.eignung()
+    warte(app, f)
+    assert gefragt == [["MS Office"]]
+    neu = json.loads(f.conn.execute("SELECT ki_eignung FROM firmen WHERE id = ?", (fid,)).fetchone()[0])
+    assert neu["score"] == 100 and neu["erfuellt"] == ["MS Office"]
+    assert any("Eignung 100 %" in m for m in f.meldungen)
+    dialog = fenster.NachfrageDialog(["A", "B"])
+    felder = dialog.findChildren(QLineEdit)
+    felder[1].setText(" ja, seit 2010 ")
+    assert dialog.antworten() == {"B": "ja, seit 2010"}
+
+
+def test_claude_wird_einmal_angeboten_und_nur_mit_zustimmung_gewaehlt(app, f, monkeypatch):
+    from jobsuche import llm
+    monkeypatch.setattr(llm, "claude_status", lambda: "")
+    fragen = []
+    f.frage = lambda text: fragen.append(text) or False
+    f.biete_claude_an()
+    assert len(fragen) == 1 and "Anthropic" in fragen[0] and not llm.ist_claude(f.modell())
+    f.biete_claude_an()
+    assert len(fragen) == 1  # nur einmal pro Person
+    db.setze_einstellung(f.conn, "claude.gefragt", "")
+    f.frage = lambda text: True
+    f.biete_claude_an()
+    assert f.modell() == llm.CLAUDE_MODELLE[0] == "claude:claude-haiku-5-5"
+    f.zeige_seite(fenster.SystemSeite)
+    seite = f.stapel.currentWidget()
+    seite.aktualisieren()
+    assert seite.auswahl.findText("claude:claude-haiku-5-5") >= 0 and "Anthropic" in seite.status.text()

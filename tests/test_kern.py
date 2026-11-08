@@ -438,3 +438,19 @@ def test_gesundheit_auch_in_internen_antworten_abgewiesen(conn):
 ])
 def test_alter_wird_nur_im_passenden_zusammenhang_gesperrt(text, sensibel):
     assert regeln.ist_sensibel(text) is sensibel
+
+
+def test_cv_formulieren_fuegt_nichts_hinzu():
+    from jobsuche import cv, llm
+    gut = lambda *a, **k: {"text": "• Betreuung von 150 Arbeitsplätzen\n- Einführung von ServiceNow"}
+    assert cv.formuliere("claude:sonnet", "Was hast du gemacht?", "150 Arbeitsplätze betreut, ServiceNow eingeführt", chat=gut) \
+        == "Betreuung von 150 Arbeitsplätzen\nEinführung von ServiceNow"
+    erfunden = lambda *a, **k: {"text": "Betreuung von 500 Arbeitsplätzen"}
+    with pytest.raises(llm.LLMFehler, match="500"):
+        cv.formuliere("claude:sonnet", "Was?", "150 Arbeitsplätze betreut", chat=erfunden)
+    assert cv.formuliere("claude:sonnet", "Wann?", "Leitung des Teams", kontext="IT-Leiter · 2010 – 2014",
+                         chat=lambda *a, **k: {"text": "Teamleitung 2010 bis 2014"}) == "Teamleitung 2010 bis 2014"
+    with pytest.raises(llm.LLMFehler, match="interne"):
+        cv.formuliere("claude:sonnet", "Was?", "Support", chat=lambda *a, **k: {"text": "Support, Gehalt verhandelbar"})
+    with pytest.raises(ValueError):
+        cv.formuliere("claude:sonnet", "Was?", "  ", chat=gut)

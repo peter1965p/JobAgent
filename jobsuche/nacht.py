@@ -56,6 +56,7 @@ def _suche(conn, modell, melde, chat, client, warte) -> dict:
 
 
 def lauf(conn: sqlite3.Connection, modell: str, melde=lambda _: None, chat=llm.chat, client=None, warte=time.sleep) -> dict:
+    ausgewichen = len(llm.AUSWEICHEN)
     bericht = {"datum": db.jetzt(), "gefunden": 0, "direkt": 0, "geprueft": 0, "ohne_adresse": 0, "zu_niedrig": 0, "firmen": [], "hinweise": [], "fehler": ""}
     try:
         ergebnis = _suche(conn, modell, melde, chat, client, warte)
@@ -138,6 +139,8 @@ def lauf(conn: sqlite3.Connection, modell: str, melde=lambda _: None, chat=llm.c
             })
     except Exception as fehler:  # Morgens soll im Bericht stehen, was schiefging, statt nur im Systemlog.
         bericht["fehler"] = f"{type(fehler).__name__}: {fehler}"
+    if len(llm.AUSWEICHEN) > ausgewichen:
+        bericht["hinweise"].append(f"Claude nicht genutzt, lokales Modell eingesprungen: {llm.AUSWEICHEN[-1]}")
     conn.execute("INSERT INTO berichte (datum, inhalt) VALUES (?, ?)", (bericht["datum"], json.dumps(bericht, ensure_ascii=False)))
     conn.commit()
     db.protokolliere(conn, "Nachtlauf", f"{bericht['gefunden']} gefunden, {len(bericht['firmen'])} im Bericht {bericht['fehler']}".strip())

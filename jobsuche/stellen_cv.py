@@ -19,7 +19,7 @@ from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate
 
 from . import config, db, pdf, person
 
-QUELLEN_NAME = {"zeugnis": "Arbeitszeugnis", "lebenslauf": "Lebenslauf"}
+QUELLEN_NAME = {"zeugnis": "Arbeitszeugnis", "lebenslauf": "Lebenslauf", "angabe": "Eigene Angabe"}
 
 
 def ordner() -> Path:
@@ -56,11 +56,13 @@ def _profilseite(conn: sqlite3.Connection, firma: str, titel: str, nachweise: li
     for n in nachweise:
         story.append(KeepTogether([
             Paragraph(escape(n["anforderung"]), stile["station"]),
-            Paragraph(escape(f"»{n['zitat']}«"), stile["punkt"], bulletText="✓"),
+            Paragraph(escape(n["zitat"] if n["art"] == "angabe" else f"»{n['zitat']}«"), stile["punkt"], bulletText="✓"),
             Paragraph(escape(QUELLEN_NAME.get(n["art"], "Unterlagen")), stile["ort"]),
         ]))
-    story.append(Paragraph("Die Nachweise sind wörtliche Auszüge aus Lebenslauf und Arbeitszeugnis, beide liegen bei.",
-                           stile["unter"]))
+    hinweis = "Zitate sind wörtliche Auszüge aus Lebenslauf und Arbeitszeugnis, beide liegen bei."
+    if any(n["art"] == "angabe" for n in nachweise):
+        hinweis += " Eigene Angaben sind als solche gekennzeichnet."
+    story.append(Paragraph(hinweis, stile["unter"]))
     fuss = pdf.fusszeile(f"{p['name']} · Qualifikationsprofil · {pdf.stand()}")
     SimpleDocTemplate(str(ziel), pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=18 * mm,
                       bottomMargin=20 * mm, title=f"Qualifikationsprofil {p['name']}", author=p["name"],

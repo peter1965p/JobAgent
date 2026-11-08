@@ -12,7 +12,7 @@ import pytest
 
 from jobsuche import db, firmen, ki, mailkonten, person, profil, suche, versand
 from jobsuche.mailkonten import Konto
-from jobsuche import nacht, quellen, rag
+from jobsuche import nacht, quellen, rag, stellen_cv
 
 KONTO = Konto("Test", "ich@example.org", "smtp.example.org", 587, "starttls", "ich@example.org")
 EIN_SATZ = {"betreff": "Bewerbung", "text": "Ich suche eine neue Stelle."}
@@ -1233,7 +1233,8 @@ def test_nachtlauf_nimmt_mittelstand_vor_konzern(conn):
 # --- Eignung und Sofort bewerben ---
 
 class _Eignung:
-    """Bewertet jede Anforderung nach einer festen Tabelle {Anforderung: (Bewertung, Beleg)}, Unbekanntes fehlt.
+    """Bewertet jede Anforderung nach einer festen Tabelle {Anforderung: (Bewertung, Zitat)}, Unbekanntes fehlt.
+    Zitat None nimmt wörtlich den Anfang von Auszug 1.
     Für Anzeigen ohne Aufzählung liefert es `liste`, auf den Entwurf eine kurze Mail."""
     def __init__(self, bewertungen, liste=()):
         self.bewertungen, self.liste, self.prompts = bewertungen, list(liste), []
@@ -1242,8 +1243,10 @@ class _Eignung:
         self.prompts.append((system, nutzer))
         if "bewertung" in schema["properties"]:
             punkt = re.search(r"<anforderung>\n(.*)\n</anforderung>", nutzer, re.S).group(1)
-            bewertung, beleg, *zitat = self.bewertungen.get(punkt, ("fehlt", 0))
-            return {"bewertung": bewertung, "beleg": beleg, "zitat": zitat[0] if zitat else ""}
+            bewertung, zitat = self.bewertungen.get(punkt, ("fehlt", ""))
+            if zitat is None:  # wörtlich die ersten Wörter aus Auszug 1
+                zitat = " ".join(re.search(r"Auszug 1 \([^)]*\): (.*)", nutzer).group(1).split()[:4])
+            return {"zitat": zitat, "auszug": 1, "bewertung": bewertung}
         if "anforderungen" in schema["properties"]:
             return {"anforderungen": self.liste}
         return {"betreff": "Anfrage", "text": "Haben Sie 15 Minuten für ein Gespräch?"}
@@ -1265,8 +1268,8 @@ def test_eignung_zaehlt_nur_belegtes_und_rechnet_selbst(conn, tmp_path):
                               "- Docker von Vorteil\n- Ansible\n- Reisebereitschaft und Führerschein Klasse B.\n\n"
                               "## Wir bieten\n- Obstkorb")
     fid = suche.uebernimm(conn, STELLE_BA, client)
-    chat = _Eignung({"Linux": ("erfuellt", beleg), "Python": ("teilweise", beleg), "SAP": ("erfuellt", 0),
-                     "Ansible": ("erfuellt", 99999)})
+    chat = _Eignung({"Linux": ("erfuellt", None), "Python": ("teilweise", None), "SAP": ("erfuellt", ""),
+                     "Ansible": ("erfuellt", "frei erfundene Ansible-Erfahrung im Rechenzentrum")})
     eignung = ki.pruefe_eignung(conn, fid, "m", chat)
     assert eignung["erfuellt"] == ["Linux"] and eignung["teilweise"] == ["Python"]
     assert eignung["fehlt"] == ["SAP", "Docker von Vorteil", "Ansible"]  # ohne gültigen Beleg zählt nichts
@@ -1285,7 +1288,7 @@ def test_eignung_schlaegt_zeugnis_inhalte_fuer_den_cv_vor(conn, tmp_path):
     beleg = conn.execute("SELECT id FROM chunks WHERE dokument_id = ?", (z,)).fetchone()[0]
     client, _ = _netz_anzeige("Dein Profil:\n• Erfahrung im Field Service")
     fid = suche.uebernimm(conn, STELLE_BA, client)
-    eignung = ki.pruefe_eignung(conn, fid, "m", _Eignung({"Erfahrung im Field Service": ("erfuellt", beleg)}))
+    eignung = ki.pruefe_eignung(conn, fid, "m", _Eignung({"Erfahrung im Field Service": ("erfuellt", None)}))
     assert eignung["score"] == 100 and "steht im Zeugnis" in eignung["cv"][0]
     assert "Für diese Stelle im CV" in ki.eignung_text(eignung)
 
@@ -1303,7 +1306,7 @@ def test_eignung_ohne_aufzaehlung_fragt_das_modell_nach_den_anforderungen(conn, 
     beleg = _mit_unterlagen(conn, tmp_path)
     client, _ = _netz_anzeige("Wir suchen jemanden mit Linux-Erfahrung und Freude am Lernen.")
     fid = suche.uebernimm(conn, STELLE_BA, client)
-    eignung = ki.pruefe_eignung(conn, fid, "m", _Eignung({"Linux": ("erfuellt", beleg)}, liste=["Linux", "Linux", "Neugier"]))
+    eignung = ki.pruefe_eignung(conn, fid, "m", _Eignung({"Linux": ("erfuellt", None)}, liste=["Linux", "Linux", "Neugier"]))
     assert eignung["erfuellt"] == ["Linux"] and eignung["fehlt"] == ["Neugier"] and eignung["score"] == 50
 
 
@@ -1327,9 +1330,9 @@ def test_sofort_bewerben_legt_entwurf_an_und_sendet_nichts(conn, tmp_path, monke
     monkeypatch.setattr(versand, "sende_entwurf", lambda *a, **k: pytest.fail("Sofort bewerben darf nicht senden"))
     beleg = _bereit_fuer_mail(conn, tmp_path)
     client, _ = _netz_anzeige()
-    ergebnis = suche.sofort_bewerben(conn, STELLE_BA, "m", chat=_Eignung({"Linux": ("erfuellt", beleg)}, liste=["Linux"]),
+    ergebnis = suche.sofort_bewerben(conn, STELLE_BA, "m", chat=_Eignung({"Linux": ("erfuellt", None)}, liste=["Linux"]),
                                      client=client)
-    assert ergebnis["eignung"]["score"] == 100 and ergebnis["entwurf_id"] and ergebnis["anhaenge"] == ["cv.pdf"]
+    assert ergebnis["eignung"]["score"] == 100 and ergebnis["entwurf_id"] and ergebnis["anhaenge"] == ["Qualifikationsprofil_myLoc_managed_IT_AG.pdf", "cv.pdf"]
     e = conn.execute("SELECT empfaenger, status FROM entwuerfe WHERE id = ?", (ergebnis["entwurf_id"],)).fetchone()
     assert tuple(e) == ("jolyne.donkor@wiit.cloud", "entwurf")
 
@@ -1359,11 +1362,11 @@ def test_eignung_laedt_die_anzeige_einer_aelteren_firma_nach(conn, tmp_path):
     beleg = _mit_unterlagen(conn, tmp_path)
     fid = firmen.lege_an(conn, "myLoc managed IT AG", quelle="Jobbörse 10001-1003900685-S")
     client, _ = _netz_anzeige("## Dein Profil\n- Linux")
-    eignung = suche.pruefe_eignung(conn, fid, "m", _Eignung({"Linux": ("erfuellt", beleg)}), client)
+    eignung = suche.pruefe_eignung(conn, fid, "m", _Eignung({"Linux": ("erfuellt", None)}), client)
     assert eignung["score"] == 100
     fid2 = firmen.lege_an(conn, "Andere AG")
     client, _ = _netz_firmenanzeigen([{"referenznummer": "X1", "firma": "Andere AG"}], details="## Profil\n- Linux")
-    assert suche.pruefe_eignung(conn, fid2, "m", _Eignung({"Linux": ("erfuellt", beleg)}), client)["score"] == 100
+    assert suche.pruefe_eignung(conn, fid2, "m", _Eignung({"Linux": ("erfuellt", None)}), client)["score"] == 100
 
 
 # --- Lebenslauf für die Stelle ---
@@ -1384,6 +1387,8 @@ def test_zitat_zaehlt_nur_wenn_es_woertlich_in_der_unterlage_steht():
     assert ki.echtes_zitat("End-User Support sowie Deskside", quelle) == "End-User Support sowie Deskside"
     assert ki.echtes_zitat("Endkunden-Support sowie Deskside", quelle) == ""  # umformuliert
     assert ki.echtes_zitat("Support", quelle) == ""  # zu kurz
+    assert ki.echtes_zitat("Desktop\xad und Notebooksystemen betankt", "Desktop\xad und Notebooksystemen betankt") == \
+        "Desktop- und Notebooksystemen betankt"
     assert ki.echtes_zitat("zehn Jahre Kubernetes im Rechenzentrum", quelle) == ""  # erfunden
     assert ki.echtes_zitat("geboren am 1. Mai 1970", "Herr Muster, geboren am 1. Mai 1970, war") == ""  # sensibel
 
@@ -1401,8 +1406,8 @@ def test_sofort_bewerben_haengt_lebenslauf_fuer_die_stelle_und_zeugnis_an(conn, 
     rag.speichere(conn, "dokument", ["Er war als Field Service Technician im Deskside Support tätig."], dokument_id=z, quellen=["z"])
     beleg = conn.execute("SELECT id FROM chunks WHERE dokument_id = ?", (z,)).fetchone()[0]
     client, _ = _netz_anzeige(ANZEIGE_TEXT + "\n\n## Dein Profil\n- Erfahrung im Field Service\n- Erfahrung mit SAP")
-    chat = _Eignung({"Erfahrung im Field Service": ("erfuellt", beleg, "Field Service Technician im Deskside Support"),
-                     "Erfahrung mit SAP": ("erfuellt", beleg, "zehn Jahre SAP-Beratung")})
+    chat = _Eignung({"Erfahrung im Field Service": ("erfuellt", "Field Service Technician im Deskside Support"),
+                     "Erfahrung mit SAP": ("erfuellt", "zehn Jahre SAP-Beratung")})
     ergebnis = suche.sofort_bewerben(conn, STELLE_BA, "m", chat=chat, client=client)
     assert ergebnis["eignung"]["nachweise"] == [{"anforderung": "Erfahrung im Field Service",
                                                  "zitat": "Field Service Technician im Deskside Support", "art": "zeugnis"}]
@@ -1431,3 +1436,116 @@ def test_versand_nimmt_die_anhaenge_des_entwurfs(conn, entwurf, tmp_path):
 def test_ohne_nachweise_bleibt_es_bei_den_allgemeinen_anhaengen(conn, entwurf):
     assert [p.name for p in profil.anhaenge_des_entwurfs(conn, entwurf)] == ["cv.pdf"]
     assert conn.execute("SELECT anhaenge FROM entwuerfe WHERE id = ?", (entwurf,)).fetchone()[0] is None
+
+
+# --- Nachfragen, was fehlt ---
+
+def _eignung_mit_luecken(conn, tmp_path):
+    beleg = _mit_unterlagen(conn, tmp_path)
+    client, _ = _netz_anzeige("## Dein Profil\n- Linux\n- SAP\n- Docker von Vorteil\n- Führerschein Klasse B")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    eignung = ki.pruefe_eignung(conn, fid, "m", _Eignung({"Linux": ("erfuellt", "Linux-Administration und Python-Entwicklung")}))
+    return fid, eignung
+
+
+def test_offene_punkte_und_eigene_angaben_heben_die_eignung(conn, tmp_path):
+    fid, eignung = _eignung_mit_luecken(conn, tmp_path)
+    assert eignung["score"] == 40  # 1 von 2,5
+    assert ki.offene_punkte(eignung) == ["SAP", "Docker von Vorteil", "Führerschein Klasse B"]
+    neu = ki.ergaenze_eignung(conn, fid, {"SAP": "SAP-Basis bei einem Mittelständler, 2010 bis 2014",
+                                          "Führerschein Klasse B": "Klasse B, eigenes Auto", "Docker von Vorteil": " ",
+                                          "Erfundener Punkt": "egal"})
+    assert neu["erfuellt"] == ["Linux", "SAP", "Führerschein Klasse B"] and neu["fehlt"] == ["Docker von Vorteil"]
+    assert neu["score"] == 80  # 2 von 2,5, der Führerschein zählt weiter nicht
+    assert {"anforderung": "SAP", "zitat": "SAP-Basis bei einem Mittelständler, 2010 bis 2014", "art": "angabe"} in neu["nachweise"]
+    assert not any(v.startswith("„SAP“") for v in neu["cv"])
+    fakten = [z[0] for z in conn.execute("SELECT text FROM fakten WHERE status = 'bestaetigt' AND quelle = 'Nachfrage Eignung'")]
+    assert fakten == ["SAP-Basis bei einem Mittelständler, 2010 bis 2014", "Klasse B, eigenes Auto"]
+    assert json.loads(conn.execute("SELECT ki_eignung FROM firmen WHERE id = ?", (fid,)).fetchone()[0])["score"] == 80
+
+
+def test_sensible_antwort_wird_abgelehnt(conn, tmp_path):
+    fid, _ = _eignung_mit_luecken(conn, tmp_path)
+    with pytest.raises(ki.NichtMoeglich, match="interne Angaben"):
+        ki.ergaenze_eignung(conn, fid, {"SAP": "Gehalt 58.000 brutto"})
+
+
+def test_eigene_angabe_steht_gekennzeichnet_im_lebenslauf_fuer_die_stelle(conn, tmp_path):
+    from pypdf import PdfReader
+    fid, _ = _eignung_mit_luecken(conn, tmp_path)
+    ki.ergaenze_eignung(conn, fid, {"SAP": "SAP-Basis bei einem Mittelständler"})
+    pfad = stellen_cv.erstelle(conn, fid)[0]
+    text = PdfReader(str(pfad)).pages[0].extract_text().replace("\n", " ")
+    assert "SAP-Basis bei einem Mittelständler" in text and "Eigene Angabe" in text and "»SAP-Basis" not in text
+
+
+def test_schreibe_bewerbung_nach_der_nachfrage(conn, tmp_path):
+    person.speichere(conn, name="Test Person", email="ich@example.org")
+    profil.lege_eigenen_fakt_an(conn, "erfahrung", "Linux und Python seit 2015")
+    fid, eignung = _eignung_mit_luecken(conn, tmp_path)
+    eignung = dict(eignung, score=30)
+    assert suche.schreibe_bewerbung(conn, fid, "m", eignung, chat=_Eignung({}))["entwurf_id"] is None
+    eignung = ki.ergaenze_eignung(conn, fid, {"SAP": "SAP-Basis bei einem Mittelständler"})
+    assert suche.schreibe_bewerbung(conn, fid, "m", eignung, chat=_Eignung({}))["entwurf_id"]
+
+
+# --- Claude über die Claude-Code-CLI ---
+
+def _claude_stream(ergebnis=None, nutzung=(0.29, 0.55), fehler="", reset=4102444800):
+    zeilen = [{"type": "system", "subtype": "init"}]
+    if nutzung:
+        zeilen.append({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "unifiedWindows": {
+            "five_hour": {"utilization": nutzung[0], "resetsAt": reset, "status": "allowed"},
+            "seven_day": {"utilization": nutzung[1], "resetsAt": reset, "status": "allowed"}}}})
+    zeilen.append({"type": "result", "is_error": bool(fehler), "result": fehler, "structured_output": ergebnis})
+    return "\n".join(json.dumps(z) for z in zeilen)
+
+
+def test_claude_laeuft_mit_haiku_ohne_werkzeuge_und_merkt_sich_das_kontingent(monkeypatch):
+    import subprocess
+    from jobsuche import llm
+    aufrufe = []
+
+    def run(befehl, **kw):
+        aufrufe.append((befehl, kw))
+        return subprocess.CompletedProcess(befehl, 0, _claude_stream({"bewertung": "erfuellt"}), "")
+    monkeypatch.setattr(llm, "claude_pfad", lambda: "/x/claude")
+    monkeypatch.setattr(llm.subprocess, "run", run)
+    assert llm.chat(llm.CLAUDE_MODELLE[0], "SYS", "Unterlagen", {"type": "object"}) == {"bewertung": "erfuellt"}
+    befehl, kw = aufrufe[0]
+    assert befehl[:6] == ["/x/claude", "-p", "--model", "claude-haiku-5-5", "--effort", "medium"]
+    assert kw["input"] == "Unterlagen" and befehl[befehl.index("--tools") + 1] == ""
+    assert "--no-session-persistence" in befehl and befehl[befehl.index("--system-prompt") + 1] == "SYS"
+    assert llm.claude_nutzung()["seven_day"]["utilization"] == 0.55 and not llm.claude_gesperrt() and not llm.AUSWEICHEN
+
+
+def test_ab_60_prozent_kontingent_uebernimmt_das_lokale_modell(monkeypatch):
+    import subprocess
+    from jobsuche import config, ki, llm
+    monkeypatch.setattr(llm, "claude_pfad", lambda: "/x/claude")
+    monkeypatch.setattr(llm.subprocess, "run", lambda b, **kw: subprocess.CompletedProcess(
+        b, 0, _claude_stream({"a": "claude"}, nutzung=(0.30, 0.61)), ""))
+    lokal = []
+    monkeypatch.setattr(llm.httpx, "post", lambda url, json, timeout: lokal.append(json["model"]) or httpx.Response(
+        200, json={"message": {"content": '{"a": "lokal"}'}}))
+    assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "claude"}  # dieser Aufruf meldet 61 %
+    assert "Wochenkontingent bei 61 %" in llm.claude_gesperrt()
+    assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "lokal"} and lokal == [config.STANDARD_MODELL]
+    assert llm.beschriftung(llm.CLAUDE_MODELLE[0], 0).startswith(f"{config.STANDARD_MODELL} statt Claude")
+    assert not llm.claude_gesperrt(jetzt=4102444801)  # nach dem Reset wieder Claude
+
+
+def test_claude_fehler_fuehren_zum_lokalen_modell(monkeypatch):
+    import subprocess
+    from jobsuche import llm
+    monkeypatch.setattr(llm, "claude_pfad", lambda: "/x/claude")
+    monkeypatch.setattr(llm.httpx, "post", lambda url, json, timeout: httpx.Response(
+        200, json={"message": {"content": '{"a": "lokal"}'}}))
+    for ausgabe, text in ((_claude_stream(fehler="Limit erreicht"), "Limit erreicht"), ("kaputt", "meldet"),
+                          (_claude_stream(None), "kein gültiges JSON")):
+        monkeypatch.setattr(llm.subprocess, "run", lambda b, a=ausgabe, **kw: subprocess.CompletedProcess(b, 0, a, ""))
+        with pytest.raises(llm.LLMFehler, match=text):
+            llm._claude_chat(llm.CLAUDE_MODELLE[0], "s", "n", {})
+        assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "lokal"} and text in llm.AUSWEICHEN[-1]
+    monkeypatch.setattr(llm, "claude_pfad", lambda: None)
+    assert llm.chat(llm.CLAUDE_MODELLE[0], "s", "n", {}) == {"a": "lokal"} and "nicht installiert" in llm.AUSWEICHEN[-1]

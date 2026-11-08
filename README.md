@@ -132,3 +132,12 @@ Die Modellgewichte ändern sich nicht. Die App merkt sich Regeln, Korrekturen, B
 ## Daten
 
 Alles Persönliche liegt in `daten/` und ist per `.gitignore` ausgeschlossen. Für die Messung der Suchqualität im Notebook kannst du dort `suchfragen.json` anlegen. Ein Notebook mit gespeicherten Ausgaben enthält ebenfalls Firmen und Bewertungen.
+
+## Claude statt lokalem Modell
+
+Ist Claude Code installiert und angemeldet, fragt die App einmal, ob sie es nutzen darf. Dann laufen Eignungsprüfung, Firmenbewertung, Mailtexte und die Formulierhilfe im CV-Assistenten über `claude -p` mit deinem Abo, ohne Werkzeuge und ohne gespeicherte Sitzung. Lebenslauf, Zeugnis, bestätigte Fakten und Stellenanzeigen gehen dabei an Anthropic. Unter „System“ wechselst du jederzeit zurück zum lokalen Modell. Eine Eignungsprüfung dauert mit Claude unter einer Minute statt mehrerer Minuten, und die Bewertung ist deutlich treffender.
+
+Was die Prüfung nicht findet oder nur teilweise belegt, fragt die App nach. Deine Antwort wird ein bestätigter Fakt und steht als „Eigene Angabe“ auf dem Qualifikationsprofil. Auf das Profil kommen sonst nur klar erfüllte Anforderungen mit wörtlichem Zitat.
+
+Im CV-Assistenten glättet „Mit Claude formulieren“ deine eigene Antwort. Der Vorschlag ersetzt nur den Text im Feld, gespeichert wird erst mit „Weiter“. Bringt er Zahlen mit, die du nicht genannt hast, oder interne Angaben, verwirft die App ihn.
+

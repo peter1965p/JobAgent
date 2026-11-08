@@ -1,6 +1,15 @@
-"""Lokales LLM über Ollama. Es gibt bewusst keinen Cloud-Anbieter."""
+"""Sprachmodell: lokal über Ollama oder, wenn die Person es wählt, Claude über ihre Claude-Code-CLI (ihr Abo).
+
+Bei Claude gehen Prompt und Unterlagen an Anthropic. Darum wird es nie still gewählt, sondern nur auf Zustimmung.
+Andere Cloud-Anbieter gibt es bewusst nicht.
+"""
 
 import json
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
 
 import httpx
 
@@ -21,8 +30,145 @@ def modelle() -> list[str]:
     return [m["name"] for m in antwort.json().get("models", []) if "coder" not in m["name"]]
 
 
+CLAUDE_PREFIX = "claude:"
+CLAUDE_MODELLE = ["claude:claude-haiku-5-5", "claude:claude-sonnet-5-5"]  # feste IDs, kein Alias
+CLAUDE_EFFORT = "medium"  # gilt nur für die Aufrufe von Job Agent, Claude Code selbst bleibt unberührt
+CLAUDE_ZEIT = 300
+# Ab diesem Anteil am 5-Stunden- oder Wochenkontingent nimmt die App bis zum Reset das lokale Modell,
+# damit für die eigene Arbeit mit Claude genug übrig bleibt.
+CLAUDE_GRENZE = 0.60
+
+
+def ist_claude(modell: str) -> bool:
+    return modell.startswith(CLAUDE_PREFIX)
+
+
+def claude_pfad() -> str | None:
+    """Auch im Nachtlauf, wo systemd `~/.local/bin` oft nicht im PATH hat."""
+    gefunden = shutil.which("claude")
+    if gefunden:
+        return gefunden
+    lokal = Path.home() / ".local/bin/claude"
+    return str(lokal) if lokal.is_file() else None
+
+
+def claude_status() -> str:
+    """Leer, wenn Claude Code installiert und angemeldet ist, sonst der Grund."""
+    pfad = claude_pfad()
+    if not pfad:
+        return "Claude Code ist nicht installiert."
+    try:
+        lauf = subprocess.run([pfad, "auth", "status", "--json"], capture_output=True, text=True, timeout=20)
+        angemeldet = json.loads(lauf.stdout or "{}").get("loggedIn")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "Claude Code antwortet nicht."
+    return "" if angemeldet else "Claude Code ist installiert, aber nicht angemeldet: claude auth login"
+
+
+def _ordner() -> Path:
+    ordner = Path(tempfile.gettempdir()) / "jobagent-claude"  # leerer Ordner: kein Projektkontext, keine CLAUDE.md
+    ordner.mkdir(exist_ok=True)
+    return ordner
+
+
+def _nutzungsdatei() -> Path:
+    return _ordner() / "nutzung.json"
+
+
+def claude_nutzung() -> dict:
+    """Letzter bekannter Stand je Fenster: {"five_hour": {"utilization": 0.29, "resetsAt": 1794171600}, ...}.
+    Liegt in einer Datei, damit App und Nachtlauf denselben Stand sehen."""
+    try:
+        return json.loads(_nutzungsdatei().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def claude_gesperrt(jetzt: float | None = None) -> str:
+    """Grund, warum die App Claude gerade nicht nutzt, sonst leer."""
+    jetzt = time.time() if jetzt is None else jetzt
+    namen = {"five_hour": "5-Stunden", "seven_day": "Wochen"}
+    for fenster, stand in claude_nutzung().items():
+        if not isinstance(stand, dict):
+            continue
+        anteil, reset = stand.get("utilization") or 0, stand.get("resetsAt") or 0
+        if reset > jetzt and (anteil >= CLAUDE_GRENZE or stand.get("status") == "rejected"):
+            bis = time.strftime("%d.%m. %H:%M", time.localtime(reset))
+            return (f"{namen.get(fenster, fenster)}kontingent bei {round(anteil * 100)} %, Grenze der App "
+                    f"{round(CLAUDE_GRENZE * 100)} %. Bis {bis} läuft das lokale Modell.")
+    return ""
+
+
+def _merke_nutzung(info: dict) -> None:
+    fenster = info.get("unifiedWindows")
+    if isinstance(fenster, dict) and fenster:
+        try:
+            _nutzungsdatei().write_text(json.dumps(fenster))
+        except OSError:
+            pass
+
+
+def _claude_chat(modell: str, system: str, nutzer: str, schema: dict) -> dict:
+    pfad = claude_pfad()
+    if not pfad:
+        raise LLMFehler("Claude Code ist nicht installiert. Wähle unter „System“ ein lokales Modell.")
+    befehl = [pfad, "-p", "--model", modell[len(CLAUDE_PREFIX):], "--effort", CLAUDE_EFFORT,
+              "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+              "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--system-prompt", system,
+              "--json-schema", json.dumps(schema)]
+    try:
+        lauf = subprocess.run(befehl, input=nutzer, capture_output=True, text=True, timeout=CLAUDE_ZEIT, cwd=_ordner())
+    except subprocess.TimeoutExpired as fehler:
+        raise LLMFehler(f"Claude hat nach {CLAUDE_ZEIT} s nicht geantwortet.") from fehler
+    except OSError as fehler:
+        raise LLMFehler(f"Claude Code ließ sich nicht starten: {fehler}") from fehler
+    antwort = None
+    for zeile in lauf.stdout.splitlines():
+        try:
+            ereignis = json.loads(zeile)
+        except ValueError:
+            continue
+        if ereignis.get("type") == "rate_limit_event":
+            _merke_nutzung(ereignis.get("rate_limit_info") or {})
+        elif ereignis.get("type") == "result":
+            antwort = ereignis
+    if antwort is None:
+        raise LLMFehler(f"Claude Code meldet: {(lauf.stderr or lauf.stdout)[:200]}")
+    if antwort.get("is_error"):
+        raise LLMFehler(f"Claude meldet: {str(antwort.get('result'))[:200]}")
+    ergebnis = antwort.get("structured_output")
+    if not isinstance(ergebnis, dict):
+        try:
+            ergebnis = json.loads(antwort.get("result") or "")
+        except ValueError:
+            ergebnis = None
+    if not isinstance(ergebnis, dict):
+        raise LLMFehler("Claude hat kein gültiges JSON geliefert.")
+    return ergebnis
+
+
+AUSWEICHEN: list[str] = []  # Gründe, aus denen statt Claude das lokale Modell lief, für Meldungen und Protokoll
+
+
+def beschriftung(modell: str, seit: int) -> str:
+    """Name für Protokoll und Anzeige. Ist seit dem Stand `seit` von AUSWEICHEN ausgewichen worden, steht das dabei."""
+    if ist_claude(modell) and len(AUSWEICHEN) > seit:
+        return f"{config.STANDARD_MODELL} statt Claude: {AUSWEICHEN[-1]}"
+    return modell
+
+
 def chat(modell: str, system: str, nutzer: str, schema: dict, temperatur: float = 0.3) -> dict:
     """Fragt das Modell mit JSON-Schema an. Ungültiges JSON wird einmal wiederholt."""
+    if ist_claude(modell):
+        grund = claude_gesperrt()
+        if not grund:
+            try:
+                return _claude_chat(modell, system, nutzer, schema)
+            except LLMFehler as fehler:
+                grund = f"Claude ging nicht ({fehler})."
+        # Lieber schlechter als gar nicht: Das lokale Modell übernimmt.
+        AUSWEICHEN.append(grund)
+        modell = config.STANDARD_MODELL
     nutzlast = {
         "model": modell,
         "stream": False,
