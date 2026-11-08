@@ -1576,3 +1576,43 @@ def test_mail_auf_eine_anzeige_ist_keine_initiativbewerbung(conn, tmp_path):
     chat = _Eignung({})
     ki.erstelle_entwurf(conn, andere, "m", chat)
     assert "Initiativbewerbung" in chat.prompts[-1][0] and "<stellenanzeige>" not in chat.prompts[-1][1]
+
+
+# --- Altersdiskriminierung vorbeugen ---
+
+def test_mail_verraet_das_alter_nicht_ueber_berufsjahre(conn, entwurf):
+    assert ki.ohne_alter(conn)  # Standard: an
+    ki.speichere_text(conn, entwurf, "Bewerbung", "Guten Tag Kim Test,\n\nÜber 35 Jahre Support.\n\nViele Grüße\nTest Person")
+    profil.lege_eigenen_fakt_an(conn, "erfahrung", "Über 35 Jahre Support")
+    befunde = ki.pruefe_entwurf(conn, entwurf)
+    assert any("verrät dein Alter" in b.text and b.stufe == "hinweis" for b in befunde)
+    db.setze_einstellung(conn, "mail.ohne_alter", "0")
+    assert not any("verrät dein Alter" in b.text for b in ki.pruefe_entwurf(conn, entwurf))
+
+
+def test_mail_prompt_lenkt_auf_juengste_stationen(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    fid = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    chat = _Eignung({})
+    ki.erstelle_entwurf(conn, fid, "m", chat)
+    assert ki.ALTER_REGEL in chat.prompts[-1][0]
+    db.setze_einstellung(conn, "mail.ohne_alter", "0")
+    conn.execute("UPDATE entwuerfe SET status = 'verworfen'")
+    chat = _Eignung({})
+    ki.erstelle_entwurf(conn, fid, "m", chat)
+    assert ki.ALTER_REGEL not in chat.prompts[-1][0]
+
+
+def test_profilseite_zitiert_nichts_was_das_alter_verraet(conn, tmp_path):
+    (tmp_path / "cv.pdf").write_bytes(b"%PDF")
+    cv = profil.fuege_unterlage_hinzu(conn, tmp_path / "cv.pdf", "lebenslauf", True)
+    rag.speichere(conn, "dokument", ["Seit 1996 selbstständiger IT-Dienstleister für Netzwerke und Support"], dokument_id=cv,
+                  quellen=["cv"])
+    client, _ = _netz_anzeige("## Dein Profil\n- Erfahrung mit Netzwerken")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    chat = _Eignung({"Erfahrung mit Netzwerken": ("erfuellt", "Seit 1996 selbstständiger IT-Dienstleister für Netzwerke")})
+    eignung = ki.pruefe_eignung(conn, fid, "m", chat)
+    assert eignung["erfuellt"] == ["Erfahrung mit Netzwerken"] and eignung["nachweise"] == []  # belegt, aber nicht zitiert
+    assert "bei mehreren passenden die jüngste" in chat.prompts[0][0]
+    db.setze_einstellung(conn, "mail.ohne_alter", "0")
+    assert ki.pruefe_eignung(conn, fid, "m", chat)["nachweise"][0]["zitat"].startswith("Seit 1996")

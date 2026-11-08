@@ -454,3 +454,9 @@ def test_cv_formulieren_fuegt_nichts_hinzu():
         cv.formuliere("claude:sonnet", "Was?", "Support", chat=lambda *a, **k: {"text": "Support, Gehalt verhandelbar"})
     with pytest.raises(ValueError):
         cv.formuliere("claude:sonnet", "Was?", "  ", chat=gut)
+
+
+def test_agenda_nimmt_die_langfristige_perspektive_auf(conn):
+    fakt(conn, "Leitung eines Teams von rund 20 Personen")
+    angaben.beantworte(conn, "perspektive", "Ich plane die nächsten Jahre bei Ihnen, nicht den Ruhestand.")
+    assert ("Wohin ich will", ["Langfristig: Ich plane die nächsten Jahre bei Ihnen, nicht den Ruhestand."]) in agenda.abschnitte(conn)

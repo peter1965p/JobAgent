@@ -37,6 +37,8 @@ def abschnitte(conn: sqlite3.Connection) -> list[tuple[str, list[str]]]:
         ziele.append(f"In 6 Monaten: {werte['ziel_6m']}")
     if "ziel_5j" in werte:
         ziele.append(f"In 5 Jahren: {werte['ziel_5j']}")
+    if "perspektive" in werte:
+        ziele.append(f"Langfristig: {werte['perspektive']}")
     inhalt = [
         ("Wer ich bin", _fakten(conn, "erfahrung")),
         ("Was ich gebaut habe", _fakten(conn, "projekt")),

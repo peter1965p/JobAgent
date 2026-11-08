@@ -221,17 +221,20 @@ def _normal(text: str) -> str:
     return re.sub(r"[\W_]+", "", text).lower()
 
 
-def echtes_zitat(zitat: str, quelle: str) -> str:
-    """Das Zitat, wenn es wörtlich in der Quelle steht, passend lang ist und nichts Sensibles enthält. Sonst leer."""
+def echtes_zitat(zitat: str, quelle: str, ohne_alter: bool = False) -> str:
+    """Das Zitat, wenn es wörtlich in der Quelle steht, passend lang ist und nichts Sensibles enthält. Sonst leer.
+    Mit `ohne_alter` fällt auch weg, was über lange Berufsjahre oder frühe Jahreszahlen das Alter verrät."""
     zitat = re.sub(r"\xad\s+(?=(und|oder|bis|sowie)\b)", "- ", str(zitat))  # „Desktop- und Notebook“
     zitat = re.sub(r"\s+", " ", re.sub(r"\xad\s*", "", zitat)).strip(" „“\"»«.,;")
     woerter = len(zitat.split())
     if not ZITAT_WOERTER[0] <= woerter <= ZITAT_WOERTER[1] or regeln.ist_sensibel(zitat):
         return ""
+    if ohne_alter and regeln.verraet_alter(zitat):
+        return ""
     return zitat if _normal(zitat) in _normal(quelle) else ""
 
 
-def _bewerte_punkt(conn: sqlite3.Connection, punkt: str, modell: str, chat) -> tuple[str, str, str]:
+def _bewerte_punkt(conn: sqlite3.Connection, punkt: str, modell: str, chat, alter: bool = False) -> tuple[str, str, str]:
     """(Bewertung, Art der belegenden Unterlage, geprüftes Zitat) für eine Anforderung gegen die passendsten Stücke
     aus Lebenslauf und Zeugnis. Ohne gültigen Beleg zählt sie als fehlend."""
     stuecke = rag.unterlagen(conn, punkt, STUECKE_JE_ANFORDERUNG)
@@ -244,6 +247,7 @@ def _bewerte_punkt(conn: sqlite3.Connection, punkt: str, modell: str, chat) -> t
         "Du prüfst eine Anforderung aus einer Stellenanzeige gegen nummerierte Auszüge aus Lebenslauf und "
         "Arbeitszeugnis eines Bewerbers. Gehe so vor: "
         "1. zitat: Suche in den Auszügen die Stelle, die der Anforderung am nächsten kommt, und kopiere sie wörtlich, "
+        "bei mehreren passenden die jüngste, "
         f"{ZITAT_WOERTER[0]} bis {ZITAT_WOERTER[1]} Wörter. Gibt es keine passende Stelle, bleibt zitat leer. "
         "2. auszug: die Nummer des Auszugs mit dem Zitat, 0 wenn leer. "
         "3. bewertung: erfuellt, wenn das Zitat die Anforderung oder etwas Gleichwertiges zeigt, also dieselbe Tätigkeit, "
@@ -264,9 +268,9 @@ def _bewerte_punkt(conn: sqlite3.Connection, punkt: str, modell: str, chat) -> t
     nummer = antwort.get("auszug")
     reihenfolge = ([stuecke[nummer - 1]] if isinstance(nummer, int) and 1 <= nummer <= len(stuecke) else []) + list(stuecke)
     for stueck in reihenfolge:
-        zitat = echtes_zitat(antwort.get("zitat", ""), stueck["text"])
-        if zitat:
-            return bewertung, arten.get(stueck["dokument_id"], ""), zitat
+        if echtes_zitat(antwort.get("zitat", ""), stueck["text"]):
+            # Belegt ist es, auch wenn das Zitat fürs Profil wegen Altersbezug wegfällt.
+            return bewertung, arten.get(stueck["dokument_id"], ""), echtes_zitat(antwort.get("zitat", ""), stueck["text"], alter)
     return "fehlt", "", ""  # Ohne wörtlichen Beleg aus den Unterlagen zählt nichts als erfüllt.
 
 
@@ -299,7 +303,7 @@ def pruefe_eignung(conn: sqlite3.Connection, firma_id: int, modell: str, chat=ll
     nur_zeugnis, nachweise = [], []
     for nummer, punkt in enumerate(zu_pruefen, 1):
         melde(f"Eignung: Anforderung {nummer} von {len(zu_pruefen)}")
-        bewertung, art, zitat = _bewerte_punkt(conn, punkt, modell, chat)
+        bewertung, art, zitat = _bewerte_punkt(conn, punkt, modell, chat, ohne_alter(conn))
         # Auf die Profilseite kommt nur, was klar belegt ist. Teilweises fragt die App lieber nach.
         if bewertung == "erfuellt" and art == "zeugnis":
             nur_zeugnis.append(punkt)
@@ -493,6 +497,7 @@ def erstelle_entwurf(conn: sqlite3.Connection, firma_id: int, modell: str, chat=
         "einen anderen Zusammenhang. Erfinde keine Zahlen, Kunden oder Fähigkeiten. "
         "Nie erwähnen: Gehalt, Alter, Gesundheit, frühere Absagen. "
         f"{regeln.fuer_prompt(regeln.lade_eigene(conn))} "
+        + (ALTER_REGEL if ohne_alter(conn) else "")
         + DATEN_REGEL
     )
     gelernt = lernen.fuer_entwurf(conn, frage)
@@ -551,7 +556,17 @@ def pruefe_entwurf(conn: sqlite3.Connection, entwurf_id: int) -> list[regeln.Bef
     quellen += [str(ich[feld]) for feld in ("name", "email", "telefon", "ort", "links") if ich[feld]]
     andere = [z["name"] for z in conn.execute("SELECT name FROM firmen WHERE id != ?", (e["firma_id"],))]
     return regeln.pruefe(e["betreff"], e["text"], e["empfaenger"], quellen, andere,
-                         firma["email"].split("@")[-1], regeln.lade_eigene(conn))
+                         firma["email"].split("@")[-1], regeln.lade_eigene(conn), ohne_alter(conn))
+
+
+def ohne_alter(conn: sqlite3.Connection) -> bool:
+    """Standard: Mails und Qualifikationsprofil verraten das Alter nicht über lange Berufsjahre oder frühe Jahreszahlen."""
+    return db.einstellung(conn, "mail.ohne_alter", "1") == "1"
+
+
+ALTER_REGEL = ("Ausnahme zu Zahlen aus <fakten>: Nenne keine Gesamtzahl an Berufsjahren ab 15 und keine Jahreszahlen vor "
+               "2005, auch wenn sie dort stehen. Schreibe stattdessen etwa „langjährige Erfahrung“. Stelle die jüngsten "
+               "Stationen und aktuelle Technik nach vorn. Alter und Ruhestand sind kein Thema. ")
 
 
 def speichere_text(conn: sqlite3.Connection, entwurf_id: int, betreff: str, text: str) -> None:

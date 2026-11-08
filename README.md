@@ -141,3 +141,7 @@ Was die Prüfung nicht findet oder nur teilweise belegt, fragt die App nach. Dei
 
 Im CV-Assistenten glättet „Mit Claude formulieren“ deine eigene Antwort. Der Vorschlag ersetzt nur den Text im Feld, gespeichert wird erst mit „Weiter“. Bringt er Zahlen mit, die du nicht genannt hast, oder interne Angaben, verwirft die App ihn.
 
+
+## Alter
+
+Standardmäßig verraten Mail und Qualifikationsprofil das Alter nicht über lange Berufsjahre oder frühe Jahreszahlen: Das Modell schreibt „langjährige Erfahrung“ statt „über 35 Jahre“ und stellt die jüngsten Stationen nach vorn. Rutscht trotzdem etwas durch, zeigt die Prüfung des Entwurfs einen Hinweis, sie sperrt aber nicht. Aufs Profil kommen solche Zitate nicht, die Anforderung zählt trotzdem als belegt. Abschalten lässt sich das unter „Profil“. Dein Zeugnis und dein Lebenslauf bleiben unverändert. Im Gespräch gehört das Thema aktiv auf den Tisch: Dafür fragt die App nach deiner langfristigen Perspektive und nimmt die Antwort in die Agenda auf.

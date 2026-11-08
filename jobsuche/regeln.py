@@ -14,6 +14,9 @@ SENSIBEL = re.compile(
     r"gehalt(?!en)|brutto|netto|€|\beuro\b|absage|hinhalt|lebensalter|\balter\s*[:=]|\balter\s+von\s+\d|mein(?:em)?\s+alter\b|jahre\s+alt\b|jahrgang|geboren|" + GESUNDHEIT.pattern,
     re.IGNORECASE,
 )
+# Lange Berufsjahre und frühe Jahreszahlen verraten das Alter, ohne es zu nennen.
+ALTERSSIGNAL = re.compile(r"(?:\b(?:über|mehr als|rund|fast|knapp|seit)\s+)?\b(?:1[5-9]|[2-9]\d)\s*\+?\s*Jahren?\b"
+                          r"|\b(?:19[4-9]\d|200[0-4])\b", re.I)
 PLATZHALTER = re.compile(r"Herr/Frau|\[[^\]]*\]|…|\.\.\.\s*$", re.M)
 ZAHL = re.compile(r"\d+(?:[.,]\d+)*")
 ADRESSE = re.compile(r"https?://[^\s,;)]+|www\.[^\s,;)]+|(?<![@\w.-])[\w-]+(?:\.[\w-]+)*\.(?:de|eu|com|net|org|io)\b", re.I)
@@ -25,6 +28,11 @@ REGEL_ARTEN = {"verboten": "Begriff verboten", "zusammen": "Nur zusammen nennen"
 class Befund:
     stufe: str  # "sperre" oder "hinweis"
     text: str
+
+
+def verraet_alter(text: str) -> str:
+    treffer = ALTERSSIGNAL.search(text)
+    return treffer.group(0).strip() if treffer else ""
 
 
 def ist_sensibel(text: str) -> bool:
@@ -90,7 +98,7 @@ def fuer_prompt(eigene: list[dict]) -> str:
 
 
 def pruefe(betreff: str, text: str, empfaenger: str, erlaubte_quellen: list[str], andere_firmen: list[str],
-           eigene_domain: str = "", eigene: list[dict] = ()) -> list[Befund]:
+           eigene_domain: str = "", eigene: list[dict] = (), ohne_alter: bool = False) -> list[Befund]:
     """`erlaubte_quellen`: bestätigte Fakten, Firmentexte und die Stilvorlage."""
     befunde: list[Befund] = []
     gesamt = f"{betreff}\n{text}"
@@ -122,6 +130,10 @@ def pruefe(betreff: str, text: str, empfaenger: str, erlaubte_quellen: list[str]
         if name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", gesamt, re.I):
             befunde.append(Befund("sperre", f"Text nennt eine andere Firma: {name}."))
 
+    signal = verraet_alter(gesamt) if ohne_alter else ""
+    if signal:
+        befunde.append(Befund("hinweis", f"„{signal}“ verrät dein Alter. Besser „langjährige Erfahrung“ und die "
+                                         "jüngsten Stationen nach vorn."))
     if re.search(r"\b(Herr|Frau)\s+[A-ZÄÖÜ]", text):
         befunde.append(Befund("hinweis", "Anrede mit Herr/Frau: Bitte selbst prüfen, ob sie stimmt."))
     woerter = len(text.split())

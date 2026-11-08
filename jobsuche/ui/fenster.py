@@ -1493,6 +1493,11 @@ class ProfilSeite(Seite):
                                   "Das ist sicherer, aber weniger persönlich.", "gedimmt", True))
         self.woertlich = Schalter("Vorlage wörtlich verwenden")
         stil.lage.addWidget(self.woertlich)
+        self.ohne_alter = Schalter("Alter nicht über Berufsjahre verraten")
+        self.ohne_alter.setToolTip("Mail und Qualifikationsprofil nennen keine Gesamtjahre ab 15 und keine Jahreszahlen "
+                                   "vor 2005, sondern „langjährige Erfahrung“ und die jüngsten Stationen.")
+        self.ohne_alter.toggled.connect(lambda an: db.setze_einstellung(self.conn, "mail.ohne_alter", "1" if an else "0"))
+        stil.lage.addWidget(self.ohne_alter)
         self.betreff = QLineEdit()
         self.betreff.setPlaceholderText("Betreff der Mails")
         stil.lage.addWidget(self.betreff)
@@ -1530,6 +1535,9 @@ class ProfilSeite(Seite):
             feld.setText(daten[schluessel])
         self.vorlage.setPlainText(db.einstellung(self.conn, "vorlage", ""))
         self.woertlich.setChecked(db.einstellung(self.conn, "mail.modus", "ki") == "vorlage")
+        self.ohne_alter.blockSignals(True)
+        self.ohne_alter.setChecked(ki.ohne_alter(self.conn))
+        self.ohne_alter.blockSignals(False)
         self.betreff.setText(db.einstellung(self.conn, "betreff", ""))
         eigene = regeln.lade_eigene(self.conn)
         fuelle(self.tab, [(regeln.REGEL_ARTEN[r["art"]], f"{r['wert']} + {r['zweiter']}" if r["zweiter"] else r["wert"],

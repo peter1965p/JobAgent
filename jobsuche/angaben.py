@@ -43,6 +43,9 @@ FRAGEN = [
           "Zum Beispiel Umzug abgeschlossen, feste Rolle im Team", True, nur_agenda=True),
     Frage("ziel_5j", "Ziel in 5 Jahren", "Wo willst du in 5 Jahren stehen?",
           "Zum Beispiel Verantwortung für den Betrieb von KI im Unternehmen", True, nur_agenda=True),
+    Frage("perspektive", "Langfristige Perspektive", "Was sagst du im Gespräch, wenn dein Alter oder der Ruhestand Thema wird?",
+          "Zum Beispiel: Ich plane die nächsten Jahre bei Ihnen, nicht den Ruhestand. Ich lerne laufend Neues, "
+          "zuletzt KI-Entwicklung.", True, nur_agenda=True),
     Frage("von_firma", "Was du von der Firma brauchst", "Was brauchst du von einer Firma, um dich zu entscheiden?",
           "Zum Beispiel Zeitplan, erste Projekte, Einschätzung zum Gehalt", True, nur_agenda=True),
 ]
