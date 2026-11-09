@@ -42,7 +42,10 @@ PORTALE = re.compile(
     r"(?:^|\.)(?:indeed|stepstone|monster|xing|linkedin|kununu|glassdoor|northdata|gelbeseiten|dasoertliche|11880|wlw|"
     r"facebook|instagram|youtube|twitter|x|tiktok|wikipedia|arbeitsagentur|meinestadt|jobware|yelp|firmenwissen|"
     r"online-handelsregister|handelsregister|unternehmensregister|creditreform|google|bing|duckduckgo|companyhouse|webvalid|"
-    r"firmenabc|firmenregister|implisense|dnb|kompany|wer-zu-wem|bundesanzeiger|landtag|bundestag|reddit|github|amazon|ebay)\.[a-z.]+$", re.I)
+    r"firmenabc|firmenregister|implisense|dnb|kompany|wer-zu-wem|bundesanzeiger|landtag|bundestag|reddit|github|amazon|ebay|"
+    r"cylex|golocal|hotfrog|infobel|yasni|werkenntdenbesten|stadtbranchenbuch|branchenbuch\w*|\w*oeffnungszeiten\w*|"
+    r"\w*branchenbuch\w*|\w*verzeichnis\w*|firmen(?:suche|info|liste|auskunft)\w*|stepstone|jooble|adzuna|kimeta|"
+    r"jobs?(?:fuer|in|boerse|portal|suche|scout)\w*)\.[a-z.]+$", re.I)
 LOKALE_INSTANZ = "http://127.0.0.1:18888"
 
 
@@ -336,10 +339,10 @@ def website_aus_internet(firma: str, ort: str, land: str, searxng: str, client: 
         return ""
     if antwort.status_code != 200:
         return ""
-    wort = re.split(r"\s+", regeln.kurzname(firma).lower())[0]
+    # Nicht nur das erste Wort: Bei „B. & K. Beispielnetz“ wäre das „b.“, und das steht in jedem Titel.
     for ergebnis in antwort.json().get("results", []):
         url = ergebnis.get("url", "")
-        if url and not ist_portal(url) and (wort in _host(url) or wort in str(ergebnis.get("title", "")).lower()):
+        if url and not ist_portal(url) and name_passt(firma, f"{_host(url)} {ergebnis.get('title', '')}"):
             return _startseite(url)
     return ""
 

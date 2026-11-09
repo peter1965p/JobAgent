@@ -560,3 +560,19 @@ def test_claude_wird_einmal_angeboten_und_nur_mit_zustimmung_gewaehlt(app, f, mo
     seite = f.stapel.currentWidget()
     seite.aktualisieren()
     assert seite.auswahl.findText("claude:claude-haiku-5-5") >= 0 and "Anthropic" in seite.status.text()
+
+
+def test_gesendet_seite_zeigt_falsche_adresse_und_kopiert(app, f):
+    firma = f.conn.execute("INSERT INTO firmen (name, email, warum) VALUES ('X GmbH', 'jobs@x.de', 'KI')").lastrowid
+    f.conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt, status, gesendet_am) "
+                   "VALUES (?, 'info@verzeichnis.de', 'b', 'Hallo', 'Hallo', 'm', ?, 'gesendet', ?)", (firma, db.jetzt(), db.jetzt()))
+    f.conn.commit()
+    f.zeige_seite(fenster.EntwurfSeite)
+    assert f.stapel.currentWidget().liste.count() == 0  # Gesendetes steht nicht mehr bei den Entwürfen
+    f.zeige_seite(fenster.GesendetSeite)
+    seite = f.stapel.currentWidget()
+    assert seite.tab.rowCount() == 1 and seite.tab.item(0, 2).text() == "info@verzeichnis.de"
+    assert "jobs@x.de" in seite.kopf.text()
+    seite.neu_entwurf()
+    assert isinstance(f.stapel.currentWidget(), fenster.EntwurfSeite)
+    assert f.conn.execute("SELECT empfaenger FROM entwuerfe WHERE status = 'entwurf'").fetchone()[0] == "jobs@x.de"

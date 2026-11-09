@@ -378,7 +378,14 @@ def uebernimm(conn: sqlite3.Connection, stelle: dict, client=None) -> int:
     text = f"Stellenangebot: {stelle['titel']}. Beruf: {stelle.get('beruf', '')}. Ort: {stelle.get('ort', '')}."
     voll = anzeigentext(stelle, client)
     stuecke = [text] + (rag.zerlege(voll) if voll else [])
-    rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[stelle["url"]] * len(stuecke), abruf=db.jetzt())
+    referenz = str(stelle.get("referenz", ""))
+    # Die Jobbörse nennt manchmal statt ihrer Seite die Bewerbungsseite der Firma. Ihr Text bleibt trotzdem die Jobbörsen-Anzeige.
+    adresse = stelle["url"] if referenz.startswith("arbeitnow:") or ":" in referenz else ANZEIGE.format(referenz)
+    rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[adresse] * len(stuecke), abruf=db.jetzt())
+    if stelle["url"] != adresse and not quellen.ist_portal(stelle["url"]):
+        client = client or httpx.Client(follow_redirects=True, timeout=20, headers={"User-Agent": config.USER_AGENT})
+        speichere_stellenseite(conn, firma_id, stelle["url"], GESCHLECHT.sub("", stelle["titel"].split(" · ")[0]).strip(),
+                               lambda u: not quellen.ist_portal(u), client)
     return firma_id
 
 
@@ -449,29 +456,112 @@ def _name_zur_mail(mail: str, text: str) -> str:
 
 
 def kontakt_aus_anzeige(conn: sqlite3.Connection, firma_id: int) -> bool:
-    """Eine in der Anzeige genannte Person geht vor info@, aber nicht vor der persönlichen Adresse der Geschäftsführung.
-    Ohne lesbaren Namen füllt die Anzeige nur eine fehlende Adresse."""
+    """Die Adresse aus der Anzeige geht vor info@ der Website, auch ohne Namen, aber nicht vor der persönlichen Adresse
+    der Geschäftsführung."""
     firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
     if firma["email"] and firmen.ist_persoenlich(firma["email"], firma["personen"]):
         return False
-    stuecke = [z[0] for z in conn.execute("SELECT text FROM chunks WHERE art = 'firma' AND firma_id = ? AND "
-                                          "(quelle LIKE '%arbeitsagentur%' OR quelle LIKE '%arbeitnow%') ORDER BY id", (firma_id,))]
-    for stueck in stuecke:
-        for mail in firmen._mails(stueck):
-            if firmen.NEBENADRESSE.match(mail):
-                continue
-            name = _name_zur_mail(mail, stueck)
-            if not name and firma["email"]:
-                continue
-            personen = ", ".join(dict.fromkeys(p for p in [name, *(x.strip() for x in firma["personen"].split(","))] if p))
-            firmen.aendere(conn, firma_id, email=mail, personen=personen)
-            db.protokolliere(conn, "Kontakt aus Stellenanzeige", mail, firma_id)
-            return True
+    # Je Anzeige der ganze Text: Die Adresse aus dem Link steht am Ende, der Name oft in einem früheren Stück.
+    seiten: dict[str, list[str]] = {}
+    for text, quelle in conn.execute("SELECT text, quelle FROM chunks WHERE art = 'firma' AND firma_id = ? AND "
+                                     f"{ki.ANZEIGE_QUELLE} ORDER BY id", (firma_id,)):
+        seiten.setdefault(quelle, []).append(text)
+    stuecke = ["\n".join(teile) for teile in seiten.values()]
+    kandidaten = [(mail, _name_zur_mail(mail, stueck)) for stueck in stuecke for mail in firmen._mails(stueck)
+                  if not firmen.NEBENADRESSE.match(mail)]
+    # Eine Adresse mit Namen ist die Ansprechperson, recruiting@ im Fuß der Stellenseite nur der Sammelkasten.
+    for mail, name in sorted(kandidaten, key=lambda k: not k[1]):
+        # Wer sich auf diese Anzeige bewirbt, schreibt an die Adresse aus der Anzeige, nicht an info@ der Website.
+        if firma["email"].lower() == mail.lower():
+            return False
+        personen = ", ".join(dict.fromkeys(p for p in [name, *(x.strip() for x in firma["personen"].split(","))] if p))
+        firmen.aendere(conn, firma_id, email=mail, personen=personen)
+        db.protokolliere(conn, "Kontakt aus Stellenanzeige", mail, firma_id)
+        return True
     return False
 
 
-def finde_website(firma: str, ort: str, land: str, searxng: str, client) -> tuple[str, bool]:
-    """Liefert die Website und ob sie nur über den Domain-Test gefunden wurde, also besonders zu prüfen ist."""
+GESCHLECHT = re.compile(r"\s*\((?:[mwdfix]\s*[/|,]?\s*){2,4}\)|\s*[mwdfix](?:/[mwdfix]){1,3}\b", re.I)
+
+
+def stellentitel(firma: sqlite3.Row) -> str:
+    """Titel der übernommenen Stelle ohne Arbeitszeit und ohne (m/w/d)."""
+    warum = firma["warum"] or ""
+    if not warum.startswith("Stelle: "):
+        return ""
+    return GESCHLECHT.sub("", warum.removeprefix("Stelle: ").split(" · ")[0]).strip()
+
+
+def speichere_stellenseite(conn: sqlite3.Connection, firma_id: int, url: str, titel: str, erlaubt, client) -> bool:
+    """Lädt eine Stellenseite und merkt sie als Anzeige, wenn sie nach Weiterleitungen noch erlaubt ist und Titel und Firma nennt."""
+    firma = conn.execute("SELECT name FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    try:
+        treffer = firmen._hole(client, url)
+    except httpx.HTTPError:
+        return False
+    if not treffer or not erlaubt(treffer[0]):
+        return False
+    text = firmen.text_aus_html(treffer[1])
+    if (titel and titel.lower() not in GESCHLECHT.sub("", text).lower()) or not quellen.name_passt(firma["name"], text):
+        return False
+    adresse = treffer[0].split("#")[0] + firmen.STELLENSEITE
+    conn.execute("DELETE FROM chunks WHERE firma_id = ? AND quelle = ?", (firma_id, adresse))
+    stuecke = rag.zerlege(text[:MAX_ANZEIGE])
+    rag.speichere(conn, "firma", stuecke, firma_id=firma_id, quellen=[adresse] * len(stuecke), abruf=db.jetzt())
+    db.protokolliere(conn, "Stellenseite der Firma geladen", treffer[0], firma_id)
+    return True
+
+
+def lade_stellenseite(conn: sqlite3.Connection, firma_id: int, searxng: str, client=None) -> bool:
+    """Sucht die Anzeige auf den eigenen Seiten der Firma, dort steht oft die Ansprechperson mit Adresse. Viele Karriereseiten
+    laden ihre Stellenliste per JavaScript, darum fragt die App die eigene SearXNG mit site:. Gültig ist nur eine Seite auf der
+    Domain der Firma, die Titel und Firma nennt."""
+    firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    titel = stellentitel(firma)
+    if not titel or not firma["website"] or not searxng.strip():
+        return False
+    if conn.execute("SELECT 1 FROM chunks WHERE firma_id = ? AND quelle LIKE ?", (firma_id, f"%{firmen.STELLENSEITE}")).fetchone():
+        return False
+    domain = firmen._host(firma["website"])
+    hosts = [domain] + [h for h in dict.fromkeys(firmen._host(z[0]) for z in conn.execute(
+        "SELECT DISTINCT quelle FROM chunks WHERE firma_id = ? AND art = 'firma'", (firma_id,))) if h != domain and firmen._schwester(f"https://{h}/", domain)]
+    client = client or httpx.Client(follow_redirects=True, timeout=20, headers={"User-Agent": config.USER_AGENT})
+    klein = titel.lower()
+    for host in reversed(hosts):  # Die Karriere-Domain zuerst.
+        try:
+            antwort = client.get(f"{searxng.strip().rstrip('/')}/search", params={"q": f"site:{host} {titel}", "format": "json"})
+            ergebnisse = antwort.json().get("results", []) if antwort.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            continue
+        for ergebnis in ergebnisse[:5]:
+            url = ergebnis.get("url", "").split("#")[0]
+            if firmen._host(url) in hosts and klein in GESCHLECHT.sub("", ergebnis.get("title", "")).lower() \
+                    and speichere_stellenseite(conn, firma_id, url, titel, lambda u: firmen._host(u) in hosts, client):
+                return True
+    return False
+
+
+FREEMAIL = re.compile(r"(?:^|\.)(?:gmail|googlemail|web|gmx|t-online|outlook|hotmail|live|yahoo|icloud|me|posteo|freenet|"
+                      r"aol|mail|arcor|online|email|protonmail|proton)\.[a-z.]+$", re.I)
+
+
+def domains_aus_anzeige(conn: sqlite3.Connection, firma_id: int) -> list[str]:
+    """Die Adresse in der Anzeige verrät meist die eigene Domain: jobs@beispielnetz.de gehört zu beispielnetz.de."""
+    text = "\n".join(z[0] for z in conn.execute(
+        f"SELECT text FROM chunks WHERE art = 'firma' AND firma_id = ? AND {ki.ANZEIGE_QUELLE}", (firma_id,)))
+    domains = [m.rpartition("@")[2].lower() for m in firmen._mails(text)]
+    return [d for d in dict.fromkeys(domains) if not FREEMAIL.search(d) and not quellen.ist_portal(f"https://{d}/")]
+
+
+def finde_website(firma: str, ort: str, land: str, searxng: str, client, domains: list[str] | None = None) -> tuple[str, bool]:
+    """Liefert die Website und ob sie nur über den Domain-Test gefunden wurde, also besonders zu prüfen ist.
+    Domains aus der Stellenanzeige gehen vor, sie stammen von der Firma selbst."""
+    if domains:
+        netz = client or httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": config.USER_AGENT})
+        website = firmen.teste_domains(firma, [f"https://{d}/" for d in domains] + [f"https://www.{d}/" for d in domains],
+                                       netz, quellen.name_passt)
+        if website:
+            return website, False
     website = quellen.website_aus_verzeichnis(firma, ort, land, client)
     if not website and searxng:
         website = quellen.website_aus_internet(firma, ort, land, searxng, client)
@@ -482,12 +572,34 @@ def finde_website(firma: str, ort: str, land: str, searxng: str, client) -> tupl
     return website, bool(website)
 
 
+def website_gehoert_firma(conn: sqlite3.Connection, firma_id: int) -> bool:
+    """Eine gesuchte Website muss die Firma im Impressum nennen, sonst ist es oft ein Verzeichnis, das über sie schreibt.
+    Ohne lesbares Impressum zählt der Text aller geladenen Seiten."""
+    firma = conn.execute("SELECT name, website FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    text = firmen.impressum_text(conn, firma_id) or "\n".join(z[0] for z in conn.execute(
+        "SELECT text FROM chunks WHERE art = 'firma' AND firma_id = ? AND quelle LIKE ?", (firma_id, f"%{firmen._host(firma['website'])}%")))
+    return quellen.name_passt(firma["name"], text)
+
+
+def verwirf_website(conn: sqlite3.Connection, firma_id: int) -> None:
+    """Entfernt die Seiten und die daraus gelesene Adresse. Die Stellenanzeige bleibt."""
+    firma = conn.execute("SELECT website, email FROM firmen WHERE id = ?", (firma_id,)).fetchone()
+    host = firmen._host(firma["website"])
+    conn.execute("DELETE FROM chunks WHERE art = 'firma' AND firma_id = ? AND quelle LIKE ?", (firma_id, f"%{host}%"))
+    email = "" if firma["email"].lower().endswith("@" + host) or firma["email"].lower().endswith("." + host) else firma["email"]
+    conn.execute("UPDATE firmen SET website = '', email = ?, seiten_geladen = NULL WHERE id = ?", (email, firma_id))
+    conn.commit()
+    db.protokolliere(conn, "Website verworfen", f"{host}: Firma steht nicht im Impressum", firma_id)
+
+
 def hole_inhaber(conn: sqlite3.Connection, firma_id: int, land: str = "de", searxng: str = "", client=None) -> dict:
     """Findet nötigenfalls die Website, lädt ihre Seiten und liest Inhaber und veröffentlichte Mailadresse aus."""
     firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
-    website, fehler = firma["website"], None
+    website, fehler, gesucht = firma["website"], None, False
     if not website:
-        website, _ = finde_website(firma["name"], firma["sitz"], land, searxng, client)
+        lade_anzeige_nach(conn, firma_id, client)  # Die Adresse darin führt oft direkt zur Website.
+        website, _ = finde_website(firma["name"], firma["sitz"], land, searxng, client, domains_aus_anzeige(conn, firma_id))
+        gesucht = bool(website)
         if website:
             firmen.aendere(conn, firma_id, website=website)
         else:
@@ -497,8 +609,14 @@ def hole_inhaber(conn: sqlite3.Connection, firma_id: int, land: str = "de", sear
             firmen.lade_seiten(conn, firma_id, client)
         except RuntimeError as ausfall:
             fehler = ausfall
+        if gesucht and not fehler and not website_gehoert_firma(conn, firma_id):
+            verwirf_website(conn, firma_id)
+            fehler = SucheFehler(f"Die gefundene Website {firmen._host(website)} nennt {firma['name']} nicht im Impressum. "
+                                 "Ich nutze sie nicht. Trage die richtige unter „Firmen“ selbst ein.")
     # Die Ansprechperson aus der Anzeige hilft auch, wenn die Website fehlt oder ausfällt.
     lade_anzeige_nach(conn, firma_id, client)
+    if conn.execute("SELECT seiten_geladen FROM firmen WHERE id = ?", (firma_id,)).fetchone()[0]:
+        lade_stellenseite(conn, firma_id, searxng, client)
     firma = conn.execute("SELECT * FROM firmen WHERE id = ?", (firma_id,)).fetchone()
     anzeigen = 0
     if not (firma["email"] and firmen.ist_persoenlich(firma["email"], firma["personen"])):
@@ -540,6 +658,10 @@ def vorschau(treffer: dict, land: str = "de", searxng: str = "", client=None) ->
     kontakt = firmen.kontakt_aus_texten("\n".join(t for u, t in texte.items() if firmen.IMPRESSUM.search(u)), "\n".join(texte.values()),
                                         firmen._host(ergebnis["website"]))
     impressum = "\n".join(t for u, t in texte.items() if firmen.IMPRESSUM.search(u))
+    if not treffer.get("website") and not quellen.name_passt(treffer["firma"], impressum or "\n".join(texte.values())):
+        ergebnis.update(website="", problem=f"Gefunden habe ich {firmen._host(ergebnis['website'])}, dort steht {treffer['firma']} "
+                                            "aber nicht im Impressum. Die Seite gehört wohl nicht zur Firma.")
+        return ergebnis
     merkmale = [m for m in (treffer.get("konzern") or "").split(", ") if m] + firmen.konzern_merkmale(treffer["firma"], impressum)
     ergebnis["konzern"] = ", ".join(dict.fromkeys(merkmale))
     ergebnis.update(kontakt, art=firmen.adressart(kontakt["email"], kontakt["personen"]),

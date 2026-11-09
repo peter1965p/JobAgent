@@ -626,7 +626,7 @@ class EntwurfSeite(Seite):
         alt = self.entwurf_id
         reihen = self.conn.execute(
             "SELECT e.id, e.status, f.name FROM entwuerfe e JOIN firmen f ON f.id = e.firma_id "
-            "WHERE e.status != 'verworfen' ORDER BY e.id DESC").fetchall()
+            "WHERE e.status IN ('entwurf', 'freigegeben') ORDER BY e.id DESC").fetchall()  # Gesendetes steht unter „Gesendet“
         self.liste.blockSignals(True)
         self.liste.clear()
         for r in reihen:
@@ -644,7 +644,7 @@ class EntwurfSeite(Seite):
         item = self.liste.currentItem()
         self.entwurf_id = item.data(Qt.UserRole) if item else None
         if self.entwurf_id is None:
-            self.an.setText("Noch keine Entwürfe. Erstelle einen unter „Firmen“.")
+            self.an.setText("Keine offenen Entwürfe. Erstelle einen unter „Firmen“, Gesendetes steht unter „Gesendet“.")
             self.betreff.clear()
             self.text.clear()
             self._zeige_befunde([])
@@ -1951,6 +1951,96 @@ class SystemSeite(Seite):
         self.f.neu_laden()
 
 
+class GesendetSeite(Seite):
+    titel = "Gesendet"
+    untertitel = "Was rausging, an wen, mit welchen Anhängen und was daraus wurde"
+
+    def __init__(self, f):
+        super().__init__(f)
+        lage = QVBoxLayout(self)
+        lage.setContentsMargins(0, 0, 0, 0)
+        lage.setSpacing(18)
+        oben = Karte("Gesendete Mails")
+        self.tab = tabelle(["Gesendet", "Firma", "An", "Betreff", "Status", "Prüfung"], [130, 190, 210, None, 110, 150])
+        self.tab.itemSelectionChanged.connect(self.lade)
+        oben.lage.addWidget(self.tab)
+        lage.addWidget(oben, 2)
+        unten = Karte("Mail")
+        self.kopf = label("", "gedimmt", True)
+        unten.lage.addWidget(self.kopf)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        unten.lage.addWidget(self.text, 1)
+        self.befunde = QVBoxLayout()
+        unten.lage.addLayout(self.befunde)
+        self.anhang = label("", "gedimmt", True)
+        self.anhang.setTextFormat(Qt.RichText)
+        self.anhang.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.anhang.linkActivated.connect(lambda pfad: QDesktopServices.openUrl(QUrl.fromLocalFile(pfad)))
+        unten.lage.addWidget(self.anhang)
+        reihe = QHBoxLayout()
+        self.neu_knopf = knopf("Als neuen Entwurf an die aktuelle Adresse", self.neu_entwurf, True)
+        self.neu_knopf.setToolTip("Kopiert die Mail in einen Entwurf an die Adresse, die jetzt bei der Firma steht. "
+                                  "Er muss wie jeder Entwurf geprüft und freigegeben werden.")
+        reihe.addWidget(self.neu_knopf)
+        reihe.addStretch()
+        reihe.addWidget(label("Ergebnis:", "gedimmt"))
+        for status, text in (("antwort", "Antwort"), ("absage", "Absage"), ("keine_antwort", "Keine Antwort")):
+            reihe.addWidget(knopf(text, lambda _=False, s=status: self.status(s)))
+        unten.lage.addLayout(reihe)
+        lage.addWidget(unten, 3)
+        self.zeilen: dict[int, dict] = {}
+
+    def aktualisieren(self):
+        mails = ki.gesendete(self.conn)
+        self.zeilen = {m["id"]: m for m in mails}
+
+        def pruefung(m):
+            if any(b.stufe == "sperre" for b in m["befunde"]):
+                return "✕ falsche Adresse?"
+            return "! Adresse prüfen" if m["befunde"] else "✓"
+        fuelle(self.tab, [((m["gesendet_am"] or m["erstellt"])[:16].replace("T", " "), m["firma"], m["empfaenger"], m["betreff"],
+                           STATUS_TEXT.get(m["status"], m["status"]), pruefung(m)) for m in mails], list(self.zeilen))
+        if self.tab.rowCount() and zeilen_id(self.tab) is None:
+            self.tab.selectRow(0)
+        self.lade()
+
+    def lade(self):
+        m = self.zeilen.get(zeilen_id(self.tab))
+        leere(self.befunde)
+        self.neu_knopf.setEnabled(bool(m))
+        if not m:
+            self.kopf.setText("Noch nichts gesendet.")
+            self.text.clear()
+            self.anhang.clear()
+            return
+        self.kopf.setText(f"An: {m['empfaenger']}\nBetreff: {m['betreff']}\n"
+                          f"Gesendet: {(m['gesendet_am'] or '')[:16].replace('T', ' ')} · Status: {STATUS_TEXT.get(m['status'], m['status'])}"
+                          + (f"\nAktuelle Adresse der Firma: {m['firma_email']}" if m["firma_email"]
+                             and m["firma_email"].lower() != m["empfaenger"].lower() else ""))
+        self.text.setPlainText(m["text"])
+        self.anhang.setText(anhang_links(profil.anhaenge_des_entwurfs(self.conn, m["id"])))
+        for b in m["befunde"]:
+            self.befunde.addWidget(label(("✕ " if b.stufe == "sperre" else "! ") + b.text, b.stufe, True))
+
+    def neu_entwurf(self):
+        eid = zeilen_id(self.tab)
+        if eid is None:
+            return
+        try:
+            ki.als_neuer_entwurf(self.conn, eid)
+        except ki.NichtMoeglich as fehler:
+            return self.f.melde(str(fehler))
+        self.f.melde("Neuer Entwurf liegt unter „Entwürfe“. Prüfe ihn und gib ihn frei.")
+        self.f.zeige_seite(EntwurfSeite)
+
+    def status(self, status):
+        eid = zeilen_id(self.tab)
+        if eid is None:
+            return
+        self.f.starte("Status speichern", lambda conn, _: ki.setze_status(conn, eid, status))
+
+
 class ProtokollSeite(Seite):
     titel = "Protokoll"
     untertitel = "Was die App wann getan hat"
@@ -1972,7 +2062,7 @@ class ProtokollSeite(Seite):
 
 class Hauptfenster(QMainWindow):
     NAVIGATION = [
-        ("ARBEIT", [StartSeite, BerichtSeite, SucheSeite, FirmenSeite, EntwurfSeite]),
+        ("ARBEIT", [StartSeite, BerichtSeite, SucheSeite, FirmenSeite, EntwurfSeite, GesendetSeite]),
         ("PROFIL", [ProfilSeite, FaktenSeite, UnterlagenSeite, CVSeite, AgendaSeite, MailkontoSeite]),
         ("KI", [GelerntSeite, SystemSeite]),
         ("ARCHIV", [ProtokollSeite]),

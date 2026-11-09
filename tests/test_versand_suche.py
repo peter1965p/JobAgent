@@ -935,8 +935,42 @@ def test_allgemeine_adresse_aus_der_anzeige_bekommt_keinen_namen(conn):
     firmen.aendere(conn, fid, personen="Alessandro Cozzi")
     assert suche.kontakt_aus_anzeige(conn, fid)
     assert tuple(conn.execute("SELECT email, personen FROM firmen WHERE id = ?", (fid,)).fetchone()) == ("jobs@wiit.cloud", "Alessandro Cozzi")
+    # Die Adresse aus der Anzeige schlägt info@ der Website: So landete eine Bewerbung bei einem Branchenverzeichnis.
     firmen.aendere(conn, fid, email="info@myloc.de")
+    assert suche.kontakt_aus_anzeige(conn, fid)
+    assert conn.execute("SELECT email FROM firmen WHERE id = ?", (fid,)).fetchone()[0] == "jobs@wiit.cloud"
     assert not suche.kontakt_aus_anzeige(conn, fid)
+
+
+def test_empfaenger_muss_zur_anzeige_passen(conn):
+    client, _ = _netz_anzeige("Bewerbungen an jobs@wiit.cloud.")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    eid = conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt) VALUES (?, ?, 'B', 'T', 'T', 'm', 'jetzt')",
+                       (fid, "info@oeffnungszeitenbuch.de")).lastrowid
+    e = conn.execute("SELECT * FROM entwuerfe WHERE id = ?", (eid,)).fetchone()
+    befunde = ki.pruefe_empfaenger(conn, e)
+    assert [b.stufe for b in befunde] == ["sperre"] and "jobs@wiit.cloud" in befunde[0].text
+    conn.execute("UPDATE entwuerfe SET empfaenger = 'jobs@wiit.cloud' WHERE id = ?", (eid,))
+    assert ki.pruefe_empfaenger(conn, conn.execute("SELECT * FROM entwuerfe WHERE id = ?", (eid,)).fetchone()) == []
+
+
+def test_verzeichnis_ist_keine_firmenwebsite():
+    assert quellen.ist_portal("https://www.oeffnungszeitenbuch.de/")
+    assert quellen.ist_portal("https://www.cylex.de/firma")
+    assert not quellen.ist_portal("https://www.beispielnetz.de/")
+    assert not quellen.ist_portal("https://www.firmenich.com/")
+
+
+def test_gesuchte_website_ohne_firma_im_impressum_wird_verworfen(conn):
+    fid = firmen.lege_an(conn, "B. & K. Beispielnetz GmbH", website="https://www.falsch.de/", quelle="Jobbörse X")
+    rag.speichere(conn, "firma", ["Impressum: Verzeichnis GmbH, info@falsch.de"], firma_id=fid,
+                  quellen=["https://www.falsch.de/impressum.html"], abruf=db.jetzt())
+    firmen.aendere(conn, fid, email="info@falsch.de")
+    assert not suche.website_gehoert_firma(conn, fid)
+    suche.verwirf_website(conn, fid)
+    zeile = conn.execute("SELECT website, email FROM firmen WHERE id = ?", (fid,)).fetchone()
+    assert tuple(zeile) == ("", "")
+    assert not conn.execute("SELECT 1 FROM chunks WHERE firma_id = ?", (fid,)).fetchone()
 
 
 def test_arbeitnow_beschreibung_wird_gespeichert(conn):
@@ -1616,3 +1650,142 @@ def test_profilseite_zitiert_nichts_was_das_alter_verraet(conn, tmp_path):
     assert "bei mehreren passenden die jüngste" in chat.prompts[0][0]
     db.setze_einstellung(conn, "mail.ohne_alter", "0")
     assert ki.pruefe_eignung(conn, fid, "m", chat)["nachweise"][0]["zitat"].startswith("Seit 1996")
+
+
+def test_website_kommt_aus_der_domain_der_anzeige(conn):
+    stelle = {**STELLE_BA, "firma": "B. & K. Beispielnetz GmbH", "referenz": "10000-1200314496-S"}
+    client, anfragen = _netz_anzeige("Bewerbung gerne an jobs@beispielnetz.de oder info@gmail.com.", {
+        "beispielnetz.de": "<html><title>B & K Beispielnetz GmbH</title><a href='/jobs'>Jobs</a><a href='/impressum'>Impressum</a></html>",
+        "beispielnetz.de/jobs": "<html>Jobs bei B & K Beispielnetz <a href='/jobs/it-support'>IT Support</a></html>",
+        "beispielnetz.de/jobs/it-support": "<html>IT Support, Ansprechpartner Kim Test</html>",
+        "beispielnetz.de/impressum": "<html>Impressum B & K Beispielnetz GmbH, 12345 Musterstadt, web@beispielnetz.de</html>",
+    })
+    fid = suche.uebernimm(conn, stelle, client)
+    assert suche.domains_aus_anzeige(conn, fid) == ["beispielnetz.de"]  # Freemail zählt nicht
+    ergebnis = suche.hole_inhaber(conn, fid, "de", "", client)
+    assert ergebnis["website"] == "https://beispielnetz.de/" and ergebnis["email"] == "jobs@beispielnetz.de"
+    quellen_der_firma = {z[0] for z in conn.execute("SELECT quelle FROM chunks WHERE firma_id = ?", (fid,))}
+    assert "https://beispielnetz.de/jobs/it-support" in quellen_der_firma  # eine Ebene unter der Karriereseite
+    assert not any("oeffnungszeiten" in str(a.url) for a in anfragen)
+
+
+def test_gesendete_liste_und_neuer_entwurf(conn):
+    client, _ = _netz_anzeige("Bewerbungen an jobs@wiit.cloud.")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    eid = conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt, status, gesendet_am, anhaenge) "
+                       "VALUES (?, 'info@oeffnungszeitenbuch.de', 'Bewerbung', 'Text', 'Text', 'm', 'x', 'gesendet', '2026-11-09T09:51', '[]')",
+                       (fid,)).lastrowid
+    conn.commit()
+    with pytest.raises(ki.NichtMoeglich):
+        ki.als_neuer_entwurf(conn, eid)  # Die Firma hat noch keine Adresse
+    gesendet = ki.gesendete(conn)
+    assert [m["id"] for m in gesendet] == [eid] and gesendet[0]["befunde"][0].stufe == "sperre"
+    firmen.aendere(conn, fid, email="jobs@wiit.cloud")
+    neu = ki.als_neuer_entwurf(conn, eid)
+    zeile = conn.execute("SELECT empfaenger, betreff, text, status, anhaenge FROM entwuerfe WHERE id = ?", (neu,)).fetchone()
+    assert tuple(zeile) == ("jobs@wiit.cloud", "Bewerbung", "Text", "entwurf", "[]")
+    assert ki.pruefe_empfaenger(conn, conn.execute("SELECT * FROM entwuerfe WHERE id = ?", (neu,)).fetchone()) == []
+    with pytest.raises(ki.NichtMoeglich):
+        ki.als_neuer_entwurf(conn, neu)  # nur Gesendetes
+
+
+def _netz_karriere(seiten, suchtreffer):
+    """Wie `_netz_anzeige`, dazu eine SearXNG, die für site:-Anfragen feste Treffer liefert."""
+    anfragen = []
+
+    def handler(anfrage):
+        anfragen.append(anfrage)
+        url = str(anfrage.url)
+        if "jobdetails" in url:
+            return httpx.Response(200, json={"stellenangebotsBeschreibung": "Wir suchen Verstärkung im IT-Support."})
+        if url.startswith("http://searx.test/search"):
+            q = anfrage.url.params["q"]
+            return httpx.Response(200, json={"results": [t for t in suchtreffer if q.startswith(f"site:{t['host']} ")]})
+        for pfad, html in seiten.items():
+            if url.split("?")[0].rstrip("/").endswith(pfad):
+                return httpx.Response(200, headers={"content-type": "text/html"}, text=html)
+        return httpx.Response(404)
+    return httpx.Client(transport=httpx.MockTransport(handler)), anfragen
+
+
+def test_stellenseite_auf_eigener_karriere_domain_liefert_ansprechperson(conn):
+    angebot = "https://www.muster-karriere.de/zentrale/offer/mitarbeiter-it-support-m-w-d/abc"
+    seiten = {
+        # Groß wie ein Baukasten: Footer mit Adresse und Karriere-Link erst hinter 500 KB.
+        "muster.de": "<html><title>Muster Recycling GmbH</title>" + "<p>Füllung</p>" * 60_000
+                     + "<a href='https://www.muster-karriere.de/'>Karriere</a><a href='mailto:info@muster.de'>E-Mail</a>"
+                     "<a href='/impressum'>Impressum</a></html>",
+        "muster.de/impressum": "<html>Impressum Muster Recycling GmbH, Geschäftsführer Max Beispiel</html>",
+        "muster-karriere.de": "<html>Karriere bei Muster <a href='mailto:recruiting@muster.de'>Recruiting</a></html>",
+        "muster-karriere.de/zentrale/offer/mitarbeiter-it-support-m-w-d/abc":
+            "<html><h1>Mitarbeiter IT-Support (m/w/d)</h1>Muster Recycling GmbH, Selm. Kontakt: Lea Probe "
+            "<a href='mailto:lea.probe@muster.de'>E-Mail schreiben</a> <a href='mailto:recruiting@muster.de'>x</a></html>",
+        "fremd-karriere.de/offer/x": "<html>Mitarbeiter IT-Support, Fremd GmbH, a.b@fremd.de</html>",
+    }
+    treffer = [
+        {"host": "muster.de", "url": "https://www.fremd-karriere.de/offer/x", "title": "Mitarbeiter IT-Support (m/w/d)"},
+        {"host": "muster-karriere.de", "url": angebot, "title": "Mitarbeiter IT-Support (m/w/d) (Selm) › Muster Recycling GmbH"},
+    ]
+    client, anfragen = _netz_karriere(seiten, treffer)
+    stelle = {**STELLE_BA, "firma": "Muster Recycling GmbH", "titel": "Mitarbeiter IT-Support (m/w/d) · Vollzeit", "website": "https://muster.de/"}
+    fid = suche.uebernimm(conn, stelle, client)
+    ergebnis = suche.hole_inhaber(conn, fid, "de", "http://searx.test", client)
+    assert ergebnis["email"] == "lea.probe@muster.de" and ergebnis["personen"].startswith("Lea Probe")
+    quellen_der_firma = {z[0] for z in conn.execute("SELECT quelle FROM chunks WHERE firma_id = ?", (fid,))}
+    assert "https://www.muster-karriere.de/" in quellen_der_firma and angebot + firmen.STELLENSEITE in quellen_der_firma
+    assert not any("fremd" in str(a.url) for a in anfragen if "searx" not in str(a.url))
+    # Die Stellenseite zählt als Anzeige: Empfängerprüfung und Eignung finden sie.
+    assert "lea.probe@muster.de" in " ".join(
+        z[0] for z in conn.execute(f"SELECT text FROM chunks WHERE firma_id = ? AND {ki.ANZEIGE_QUELLE}", (fid,)))
+    # Neues Laden der Website wirft die Stellenseite nicht weg.
+    firmen.lade_seiten(conn, fid, client)
+    assert conn.execute("SELECT count(*) FROM chunks WHERE firma_id = ? AND quelle = ?", (fid, angebot + firmen.STELLENSEITE)).fetchone()[0]
+
+
+def test_schwester_domain_nur_mit_firmenname_und_karriere():
+    assert firmen._schwester("https://www.muster-karriere.de/", "muster.de")
+    assert firmen._schwester("https://karriere.muster.de/", "muster.de")
+    assert not firmen._schwester("https://www.stepstone.de/karriere", "muster.de")
+    assert not firmen._schwester("https://www.muster-shop.de/", "muster.de")
+    assert suche.stellentitel({"warum": "Stelle: Mitarbeiter IT-Support (m/w/d) · Vollzeit"}) == "Mitarbeiter IT-Support"
+
+
+def test_stellen_beim_bewerbersystem_der_firma_werden_geladen(conn):
+    seiten = {
+        "beispiel-bau.de": "<html><title>Beispiel Bau GmbH</title><a href='/karriere'>Karriere</a><a href='/impressum'>Impressum</a></html>",
+        "beispiel-bau.de/impressum": "<html>Impressum Beispiel Bau GmbH</html>",
+        "beispiel-bau.de/karriere": "<html>Unsere Stellen: <a href='https://beispielbau.softgarden.io/de/vacancies'>Alle Stellen</a>"
+                                    "<a href='https://softgarden.io/'>powered by</a></html>",
+        "beispielbau.softgarden.io/de/vacancies": "<html><a href='/job/123456/Systemadministrator'>Systemadministrator (m/w/d)</a>"
+                                                  "<a href='/datenschutz'>Datenschutz</a></html>",
+        "beispielbau.softgarden.io/job/123456/Systemadministrator":
+            "<html>Systemadministrator (m/w/d) bei Beispiel Bau GmbH. Ansprechpartnerin Ina Probe, ina.probe@beispiel-bau.de</html>",
+    }
+    client, anfragen = _netz_karriere(seiten, [])
+    fid = firmen.lege_an(conn, "Beispiel Bau GmbH", website="https://beispiel-bau.de/")
+    firmen.lade_seiten(conn, fid, client)
+    quellen_der_firma = {z[0] for z in conn.execute("SELECT quelle FROM chunks WHERE firma_id = ?", (fid,))}
+    assert "https://beispielbau.softgarden.io/job/123456/Systemadministrator" in quellen_der_firma
+    assert not any(str(a.url).rstrip("/") == "https://softgarden.io" for a in anfragen)
+    assert conn.execute("SELECT count(*) FROM chunks WHERE firma_id = ? AND text LIKE '%Ina Probe%'", (fid,)).fetchone()[0]
+
+
+def test_externe_bewerbungsseite_aus_der_jobboerse_zaehlt_als_anzeige(conn):
+    seiten = {"jobs.beispiel-bau.de/it-support": "<html>IT-Support (m/w/d) bei Beispiel Bau GmbH, Kontakt Ina Probe "
+                                                 "<a href='mailto:ina.probe@beispiel-bau.de'>Mail</a></html>"}
+    client, _ = _netz_karriere(seiten, [])
+    stelle = {**STELLE_BA, "firma": "Beispiel Bau GmbH", "titel": "IT-Support (m/w/d) · Vollzeit",
+              "url": "https://jobs.beispiel-bau.de/it-support"}
+    fid = suche.uebernimm(conn, stelle, client)
+    quellen_der_firma = {z[0] for z in conn.execute("SELECT quelle FROM chunks WHERE firma_id = ?", (fid,))}
+    assert suche.ANZEIGE.format(STELLE_BA["referenz"]) in quellen_der_firma
+    assert "https://jobs.beispiel-bau.de/it-support" + firmen.STELLENSEITE in quellen_der_firma
+    assert suche.kontakt_aus_anzeige(conn, fid)
+    assert conn.execute("SELECT email, personen FROM firmen WHERE id = ?", (fid,)).fetchone()[:] == ("ina.probe@beispiel-bau.de", "Ina Probe")
+
+
+def test_bewerbersystem_nur_mit_eigener_stellenseite():
+    assert firmen._schwester("https://beispielbau.softgarden.io/de/vacancies", "beispiel-bau.de")
+    assert firmen._schwester("https://beispiel.jobs.personio.de/", "beispiel-bau.de")
+    assert not firmen._schwester("https://softgarden.io/", "beispiel-bau.de")
+    assert not firmen._schwester("https://www.personio.de/", "beispiel-bau.de")

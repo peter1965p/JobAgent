@@ -13,7 +13,7 @@ from . import config, db, rag
 
 MAX_SEITEN = 6
 SEITEN_PAUSE = 0.5  # Kleine Firmen hosten oft schwach: Der Abruf soll niemandem zur Last fallen.
-MAX_BYTES = 500_000
+MAX_BYTES = 3_000_000  # Baukasten-Seiten sind oft über 1 MB, Footer mit Adresse und Karriere-Link stehen am Ende.
 IMPRESSUM = re.compile(r"impressum|imprint|legal|rechtlich|anbieterkennzeichnung", re.I)
 # Manche Seiten bauen ihre Navigation erst per JavaScript auf, das Impressum ist aber trotzdem da.
 IMPRESSUM_PFADE = ("/impressum", "/impressum/", "/de/impressum", "/imprint", "/legal-notice", "/impressum.html")
@@ -267,19 +267,62 @@ def text_aus_html(html: str) -> str:
     return re.sub(r"\n{2,}", "\n", "\n".join([text, *mails]))
 
 
-def _links(html: str, basis: str) -> list[str]:
+# Die Stellenseite auf der Website der Firma zählt wie eine Anzeige. Die Marke hängt an ihrer Adresse in `chunks.quelle`.
+STELLENSEITE = "#stellenanzeige"
+KARRIERE_SEITE = re.compile(r"karriere|career|jobs?\b|stellen|vakanz|bewerb", re.I)
+MAX_STELLENSEITEN = 6
+
+
+def _links(html: str, basis: str, muster: re.Pattern | None = None) -> list[str]:
     host = urlsplit(basis).netloc
+    muster = muster or RELEVANT
     gefunden, impressum = [], set()
     for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
         url = urljoin(basis, a["href"]).split("#")[0]
         teile = urlsplit(url)
-        if teile.scheme in ("http", "https") and teile.netloc == host and url not in gefunden:
-            if RELEVANT.search(teile.path) or RELEVANT.search(a.get_text()):
+        if teile.scheme in ("http", "https") and teile.netloc == host and url not in gefunden and url != basis:
+            if muster.search(teile.path) or muster.search(a.get_text()):
                 gefunden.append(url)
                 if IMPRESSUM.search(a.get_text()):
                     impressum.add(url)
     # Das Impressum zuerst: Dort stehen die Ansprechpartner. Sein Link heißt oft anders als seine Adresse.
     return sorted(gefunden, key=lambda u: 0 if u in impressum or IMPRESSUM.search(u) else 1 if re.search("karriere|career|jobs?\\b|stellen|kontakt|contact|team", u, re.I) else 2)
+
+
+# Bewerbermanagement-Systeme, auf denen Firmen ihre Stellen veröffentlichen. Gilt nur für Links von der eigenen Website,
+# dort ist es die Stellenseite der Firma und kein Portal.
+BEWERBERSYSTEM = re.compile(r"(?:^|\.)(?:softgarden\.(?:io|de)|personio\.(?:de|com)|join\.com|recruitee\.com|greenhouse\.io|lever\.co"
+                            r"|smartrecruiters\.com|myworkdayjobs\.com|successfactors\.(?:eu|com)|dvinci(?:-hr)?\.(?:com|de)|onlyfy\.jobs"
+                            r"|prescreen\.io|rexx-systems\.com|concludis\.de|(?:my-)?job-shop\.com|umantis\.com|jobbase\.io|kenjo\.io"
+                            r"|teamtailor\.com|workable\.com|breezy\.hr|bamboohr\.com|ashbyhq\.com|heyrecruit\.de|jobylon\.com"
+                            r"|hr4you\.org|coveto\.de|talention\.(?:de|com)|ventari\.de|jobs\.b-ite\.com)$", re.I)
+STELLEN_LINK = re.compile(r"karriere|career|jobs?|stelle|position|offer|vacanc|vakanz|bewerb|ausschreibung|\d{4,}", re.I)
+
+
+def _schwester(url: str, domain: str) -> bool:
+    """Eigene Karriere-Domain der Firma: firma.de verlinkt auf firma-karriere.de, der Domainname muss im Host stehen. Oder die
+    Stellenseite der Firma bei einem Bewerbermanagement-System, aber nicht dessen Werbelink „powered by“ auf die Startseite."""
+    teile = urlsplit(url)
+    host, kern = _host(url), domain.split(".")[0]
+    if not host or host == domain:
+        return False
+    if BEWERBERSYSTEM.search(host):
+        basis = BEWERBERSYSTEM.search(host).group(0).lstrip(".")
+        return host != basis or teile.path.strip("/") != ""
+    return len(kern) >= 3 and kern in host.split(".")[-2] and bool(KARRIERE_SEITE.search(url))
+
+
+MAX_KARRIERE_DOMAINS = 2
+
+
+def karriere_links(html: str, basis: str, domain: str) -> list[str]:
+    gefunden, hosts = [], set()
+    for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        url = urljoin(basis, a["href"]).split("#")[0]
+        if urlsplit(url).scheme in ("http", "https") and _schwester(url, domain) and _host(url) not in hosts:
+            gefunden.append(url)
+            hosts.add(_host(url))
+    return gefunden[:MAX_KARRIERE_DOMAINS]
 
 
 def _hole(client: httpx.Client, url: str) -> tuple[str, str] | None:
@@ -347,6 +390,38 @@ def hole_seiten(website: str, client: httpx.Client, max_seiten: int = MAX_SEITEN
             continue
         if treffer and urlsplit(treffer[0]).netloc == urlsplit(basis).netloc:
             seiten[treffer[0]] = treffer[1]
+    # Die Karriereseite liegt manchmal auf einer eigenen Domain der Firma.
+    # Der Link dorthin steht auf der Startseite oder erst auf der Karriereseite der eigenen Domain.
+    ziele = list(dict.fromkeys(u for html in list(seiten.values()) for u in karriere_links(html, basis, domain)))
+    for url in ziele[:MAX_KARRIERE_DOMAINS]:
+        teile = urlsplit(url)
+        fremd = _robots(client, f"{teile.scheme}://{teile.netloc}/")
+        if url in seiten or not fremd.can_fetch(config.USER_AGENT, url):
+            continue
+        time.sleep(SEITEN_PAUSE)
+        try:
+            treffer = _hole(client, url)
+        except httpx.HTTPError:
+            continue
+        if treffer and _schwester(treffer[0], domain):
+            seiten[treffer[0]] = treffer[1]
+    # Eine Ebene tiefer nur auf der Karriereseite: Dort hängen die einzelnen Stellen mit Ansprechperson.
+    for url, html in list(seiten.items()):
+        if not (_schwester(url, domain) or KARRIERE_SEITE.search(urlsplit(url).path)):
+            continue
+        regeln_ = robots if urlsplit(url).netloc == urlsplit(basis).netloc else _robots(client, urljoin(url, "/"))
+        for unter in _links(html, url, STELLEN_LINK if _schwester(url, domain) else KARRIERE_SEITE):
+            if len(seiten) >= max_seiten + MAX_STELLENSEITEN:
+                break
+            if unter in seiten or not regeln_.can_fetch(config.USER_AGENT, unter):
+                continue
+            time.sleep(SEITEN_PAUSE)
+            try:
+                treffer = _hole(client, unter)
+            except httpx.HTTPError:
+                continue
+            if treffer and urlsplit(treffer[0]).netloc == urlsplit(url).netloc:
+                seiten[treffer[0]] = treffer[1]
     if not any(IMPRESSUM.search(u) for u in seiten):
         for pfad in IMPRESSUM_PFADE:
             url = urljoin(basis, pfad)
@@ -381,7 +456,8 @@ def lade_seiten(conn: sqlite3.Connection, firma_id: int, client: httpx.Client | 
             texte.append(stueck)
             quellen.append(url)
     # Eine gemerkte Stellenanzeige bleibt erhalten, nur die Webseiten werden ersetzt.
-    conn.execute("DELETE FROM chunks WHERE art = 'firma' AND firma_id = ? AND quelle NOT LIKE '%arbeitsagentur%' AND quelle NOT LIKE '%arbeitnow%'", (firma_id,))
+    conn.execute("DELETE FROM chunks WHERE art = 'firma' AND firma_id = ? AND quelle NOT LIKE '%arbeitsagentur%' AND quelle NOT LIKE '%arbeitnow%' "
+                 f"AND quelle NOT LIKE '%{STELLENSEITE}'", (firma_id,))
     jetzt = db.jetzt()
     rag.speichere(conn, "firma", texte, firma_id=firma_id, quellen=quellen, abruf=jetzt)
     conn.execute("UPDATE firmen SET seiten_geladen = ?, website = ? WHERE id = ?", (jetzt, basis, firma_id))

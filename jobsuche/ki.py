@@ -159,7 +159,7 @@ def anzeige_der_firma(conn: sqlite3.Connection, firma_id: int) -> tuple[str, str
     """(Text, Quelle) der Stellenanzeige. Die zur Übernahme passende Anzeige geht vor weiteren der Firma."""
     firma = _firma(conn, firma_id)
     zeilen = conn.execute("SELECT text, quelle FROM chunks WHERE art = 'firma' AND firma_id = ? AND text NOT LIKE 'Stellenangebot:%' "
-                          "AND (quelle LIKE '%arbeitsagentur%' OR quelle LIKE '%arbeitnow%') ORDER BY id", (firma_id,)).fetchall()
+                          f"AND {ANZEIGE_QUELLE} ORDER BY id", (firma_id,)).fetchall()
     if not zeilen:
         return "", ""
     quellen_ = list(dict.fromkeys(z["quelle"] for z in zeilen))
@@ -556,7 +556,35 @@ def pruefe_entwurf(conn: sqlite3.Connection, entwurf_id: int) -> list[regeln.Bef
     quellen += [str(ich[feld]) for feld in ("name", "email", "telefon", "ort", "links") if ich[feld]]
     andere = [z["name"] for z in conn.execute("SELECT name FROM firmen WHERE id != ?", (e["firma_id"],))]
     return regeln.pruefe(e["betreff"], e["text"], e["empfaenger"], quellen, andere,
-                         firma["email"].split("@")[-1], regeln.lade_eigene(conn), ohne_alter(conn))
+                         firma["email"].split("@")[-1], regeln.lade_eigene(conn), ohne_alter(conn)) + pruefe_empfaenger(conn, e)
+
+
+ANZEIGE_QUELLE = "(quelle LIKE '%arbeitsagentur%' OR quelle LIKE '%arbeitnow%' OR quelle LIKE '%#stellenanzeige')"
+
+
+def pruefe_empfaenger(conn: sqlite3.Connection, e) -> list[regeln.Befund]:
+    """Gehört die Adresse zur Firma? Nennt die Anzeige eine andere Adresse, ist das eine Sperre: So ging schon eine
+    Bewerbung an ein Branchenverzeichnis, das die Firma nur aufführt."""
+    empfaenger = (e["empfaenger"] or "").strip().lower()
+    if "@" not in empfaenger:
+        return []
+    anzeige = "\n".join(z[0] for z in conn.execute(
+        f"SELECT text FROM chunks WHERE art = 'firma' AND firma_id = ? AND {ANZEIGE_QUELLE}", (e["firma_id"],)))
+    in_anzeige = {m.lower() for m in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", anzeige)}
+    if empfaenger in in_anzeige:
+        return []
+    domain = empfaenger.rpartition("@")[2]
+    if in_anzeige and not any(m.rpartition("@")[2] == domain for m in in_anzeige):
+        return [regeln.Befund("sperre", f"Die Stellenanzeige nennt {', '.join(sorted(in_anzeige))}, die Mail geht aber an "
+                                        f"{empfaenger}. Prüfe unter „Firmen“, ob Website und Adresse wirklich zu dieser Firma gehören.")]
+    name = _firma(conn, e["firma_id"])["name"]
+    woerter = [w for w in re.findall(r"[a-zäöüß0-9]{3,}", regeln.kurzname(name).lower())]
+    flach = re.sub(r"[^a-z0-9]", "", domain.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))
+    if woerter and not any(re.sub(r"[^a-z0-9]", "", w.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))[:6]
+                           in flach for w in woerter):
+        return [regeln.Befund("hinweis", f"Die Adresse {empfaenger} enthält nichts aus dem Firmennamen. Prüfe, ob sie zu "
+                                         f"{name} gehört und nicht zu einem Verzeichnis oder Portal.")]
+    return []
 
 
 def ohne_alter(conn: sqlite3.Connection) -> bool:
@@ -595,6 +623,37 @@ def gib_frei(conn: sqlite3.Connection, entwurf_id: int) -> None:
     conn.execute("UPDATE entwuerfe SET status = 'freigegeben', freigegeben_am = ? WHERE id = ?", (db.jetzt(), entwurf_id))
     conn.commit()
     db.protokolliere(conn, "Entwurf freigegeben", f"Entwurf {entwurf_id}", e["firma_id"])
+
+
+GESENDET = ("gesendet", "antwort", "absage", "keine_antwort")
+
+
+def gesendete(conn: sqlite3.Connection) -> list[dict]:
+    """Alle gesendeten Mails, die jüngste zuerst, mit dem Ergebnis der Empfängerprüfung."""
+    zeilen = conn.execute(
+        f"SELECT e.*, f.name AS firma, f.email AS firma_email FROM entwuerfe e JOIN firmen f ON f.id = e.firma_id "
+        f"WHERE e.status IN ({','.join('?' * len(GESENDET))}) ORDER BY COALESCE(e.gesendet_am, e.erstellt) DESC, e.id DESC",
+        GESENDET).fetchall()
+    return [{**dict(z), "befunde": pruefe_empfaenger(conn, z)} for z in zeilen]
+
+
+def als_neuer_entwurf(conn: sqlite3.Connection, entwurf_id: int) -> int:
+    """Kopiert eine gesendete Mail in einen neuen Entwurf an die aktuelle Adresse der Firma, etwa nach einer falschen
+    Adresse. Die Kopie muss wie jeder Entwurf geprüft und freigegeben werden."""
+    e = conn.execute("SELECT e.*, f.email AS firma_email FROM entwuerfe e JOIN firmen f ON f.id = e.firma_id WHERE e.id = ?",
+                     (entwurf_id,)).fetchone()
+    if not e or e["status"] not in GESENDET:
+        raise NichtMoeglich("Kopieren lässt sich nur eine gesendete Mail.")
+    if not e["firma_email"]:
+        raise NichtMoeglich("Für die Firma ist keine Adresse eingetragen. Trage sie unter „Firmen“ ein.")
+    conn.execute("UPDATE entwuerfe SET status = 'verworfen' WHERE firma_id = ? AND status = 'entwurf'", (e["firma_id"],))
+    cursor = conn.execute(
+        "INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, fakt_ids, erstellt, anhaenge) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (e["firma_id"], e["firma_email"], e["betreff"], e["text"], e["ki_text"], e["modell"], e["fakt_ids"], db.jetzt(), e["anhaenge"]))
+    conn.commit()
+    db.protokolliere(conn, "Gesendete Mail als neuer Entwurf", f"An {e['firma_email']} statt {e['empfaenger']}", e["firma_id"])
+    return cursor.lastrowid
 
 
 def setze_status(conn: sqlite3.Connection, entwurf_id: int, status: str) -> None:
