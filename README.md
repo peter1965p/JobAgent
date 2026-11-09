@@ -77,8 +77,15 @@ Mails an Firmen ohne vorherigen Kontakt können rechtlich heikel sein (§ 7 UWG,
 | Jobbörse der Arbeitsagentur | Aktuelle Stellen, nur Deutschland | Nicht offiziell dokumentiert, keine Websites |
 | Arbeitnow | Aktuelle Stellen über eine freie Schnittstelle | Nur die neuesten 300, Ort als Textvergleich |
 | Internet (eigene SearXNG-Instanz) | Firmenseiten und Impressen zu deinen Berufen | Musst du selbst betreiben; SearXNG fragt dafür öffentliche Suchmaschinen ab, deren Bedingungen das teils untersagen |
+| Job-Alerts (eigenes Postfach) | Stellen aus Alert-Mails von LinkedIn, Indeed, StepStone, XING, Jobs für Niedersachsen, Interamt, Karriereportal Niedersachsen, Jobbörse und heise jobs | Nur was du dort als Alert eingerichtet hast, die letzten 14 Tage, Gmail mit OAuth braucht ein App-Passwort |
+| Portale (über SearXNG) | LinkedIn- und StepStone-Stellen aus der Trefferliste der Suchmaschinen | Nur was die Suchmaschinen kennen, Titel und Ort aus dem Schnipsel; die Suchmaschinen sperren bei vielen Anfragen |
+| Adzuna, Jooble | Stellen vieler Börsen über eine Schnittstelle | Kostenlose Registrierung und Schlüssel nötig; Parameter wie Jooble-Radius nicht gegen die echte Schnittstelle geprüft |
 
-Die App liest Stellen nur über offene Schnittstellen. StepStone, Indeed, LinkedIn und Kununu sind deshalb keine Quelle.
+Die App ruft StepStone, Indeed, LinkedIn und andere Portale nie selbst ab und öffnet keine Links aus Alert-Mails, das sind Klick-Zähler. Sie liest nur Mails in deinem Postfach und Trefferlisten der Suchmaschinen. Die Anzeige öffnest du selbst im Browser.
+
+**Postfach:** Unter „Postfächer“ auf der Suchseite wählst du die Posteingänge, die App schlägt die IMAP-Konten aus Thunderbird und den Server deines Versandkontos vor. Sie öffnet den Posteingang schreibgeschützt und liest mit `BODY.PEEK`: Ungelesenes bleibt ungelesen, nichts wird verschoben oder gelöscht. Gelesen werden nur Mails der bekannten Portale, jede nur einmal, das Ergebnis liegt in deiner Datenbank. Passwörter liegen im Schlüsselbund, ohne eigenes gilt das des Versandkontos, wenn der Benutzer derselbe ist. Ohne SSL oder STARTTLS meldet sich die App nicht an.
+
+**Stichwörter und Ort:** Alerts, Portale und Aggregatoren liefern auch Fremdes. Die App behält nur Stellen, deren Titel eines deiner Stichwörter enthält; kurze wie „IT“ zählen nur als ganzes Wort. Die Stichwörter leitet das Modell zusammen mit den Berufen ab, du kannst sie auf der Suchseite ändern. Den Ort der Stelle sucht die App bei OpenStreetMap, merkt ihn sich und sortiert aus, was außerhalb des Gebiets liegt. Fernarbeit und unbekannte Orte bleiben drin, der Hinweis über der Liste nennt die Zahl.
 
 Der Filter für Voll- und Teilzeit gilt für Jobbörse und Arbeitnow. Das Verzeichnis und die Internetsuche liefern Firmen statt Stellen und kennen keine Arbeitszeit. Bei Arbeitnow bleiben Anzeigen ohne Angabe in der Liste.
 
@@ -92,11 +99,11 @@ Suchmaschinen kennen keinen Umkreis. Darum liest die App bei jedem Internet-Tref
 
 ### SearXNG einrichten
 
-Die Internetsuche braucht eine eigene SearXNG-Instanz. Läuft sie auf `127.0.0.1:18888`, erkennt die App sie selbst, sonst trägst du ihre Adresse auf der Suchseite ein. In der `settings.yml` muss unter `search.formats` auch `json` stehen. Sie sollte nur lokal lauschen und braucht einen eigenen `secret_key`.
+Internetsuche und Portale brauchen eine eigene SearXNG-Instanz. Läuft sie auf `127.0.0.1:18888`, erkennt die App sie selbst, sonst trägst du ihre Adresse auf der Suchseite ein. In der `settings.yml` muss unter `search.formats` auch `json` stehen. Sie sollte nur lokal lauschen und braucht einen eigenen `secret_key`.
 
 ## Inhaber und Empfänger
 
-Die App liest Impressum, Kontakt- und Teamseiten der Firma, nur auf deren eigener Domain und unter Beachtung von `robots.txt`. Eine persönliche Adresse des Inhabers geht vor `info@`. Es zählen nur veröffentlichte Adressen: Die App rät keine und nutzt keine geleakten Daten. Die Erkennung arbeitet mit Textmustern für deutsche Seiten und kann danebenliegen, prüfe das Ergebnis.
+Die App liest Impressum, Kontakt-, Team- und Karriereseiten der Firma unter Beachtung von `robots.txt`: auf ihrer Domain, auf einer eigenen Karriere-Domain mit ihrem Namen (firma.de → firma-karriere.de) und bei Bewerbermanagement-Systemen wie softgarden oder Personio, wenn die eigene Website dorthin verlinkt. Die Stellenseite zur übernommenen Anzeige sucht sie zusätzlich über SearXNG mit `site:` und wertet sie wie die Anzeige, wenn Titel und Firma darauf stehen. Nennt die Anzeige eine Adresse, muss der Empfänger zu ihr passen, sonst sperrt die Freigabe. Eine persönliche Adresse des Inhabers geht vor `info@`. Es zählen nur veröffentlichte Adressen: Die App rät keine und nutzt keine geleakten Daten. Die Erkennung arbeitet mit Textmustern für deutsche Seiten und kann danebenliegen, prüfe das Ergebnis.
 
 ## Nachtlauf
 

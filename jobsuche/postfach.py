@@ -165,6 +165,7 @@ class Postfach:
     port: int
     benutzer: str
     oauth: bool = False  # Bei OAuth-Konten (Gmail in Thunderbird) braucht es ein App-Passwort.
+    sicherheit: str = "ssl"  # "ssl" oder "starttls". Ohne Verschlüsselung meldet sich die App nicht an.
 
     @property
     def name(self) -> str:
@@ -173,7 +174,7 @@ class Postfach:
 
 def vorschlaege(conn: sqlite3.Connection, home=None) -> list[Postfach]:
     """Posteingänge aus Thunderbird, dazu der zum Versandkonto passende Server."""
-    gefunden = [Postfach(k.host, k.port, k.benutzer, k.oauth) for k in mailkonten.thunderbird_eingang(home)]
+    gefunden = [Postfach(k.host, k.port, k.benutzer, k.oauth, k.sicherheit) for k in mailkonten.thunderbird_eingang(home)]
     konto = versand.lade_konto(conn)
     if konto and not any(p.benutzer == konto.benutzer for p in gefunden):
         host = re.sub(r"^(?:smtps?|mail\.out|out|mx)\.", "imap.", konto.host) if konto.host.split(".")[0] != "imap" else konto.host
@@ -223,10 +224,24 @@ def _seit(tage: int) -> str:
     return f"{tag.day:02d}-{MONATE[tag.month - 1]}-{tag.year}"
 
 
+def _verbinde(p: Postfach, imap_klasse):
+    """`imap_klasse` ersetzt in Tests den Server. Sonst SSL oder STARTTLS, unverschlüsselt nie: Das Passwort ginge im Klartext."""
+    if imap_klasse is not None:
+        return imap_klasse(p.host, p.port)
+    kontext = ssl.create_default_context()
+    if p.sicherheit == "ssl":
+        return imaplib.IMAP4_SSL(p.host, p.port, ssl_context=kontext, timeout=30)
+    if p.sicherheit == "starttls":
+        verbindung = imaplib.IMAP4(p.host, p.port, timeout=30)
+        verbindung.starttls(kontext)
+        return verbindung
+    raise SucheFehler(f"Postfach {p.name}: Der Server ist ohne Verschlüsselung eingetragen, dort meldet sich die App nicht an.")
+
+
 def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_klasse) -> tuple[str, list[tuple[int, bytes]]]:
     try:
-        verbindung = imap_klasse(p.host, p.port, ssl_context=ssl.create_default_context(), timeout=30)
-    except (OSError, socket.timeout) as fehler:
+        verbindung = _verbinde(p, imap_klasse)
+    except (OSError, socket.timeout, imaplib.IMAP4.error) as fehler:
         raise SucheFehler(f"Postfach {p.host}:{p.port} ist nicht erreichbar: {fehler}") from fehler
     try:
         try:
@@ -264,7 +279,7 @@ def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_kl
             pass
 
 
-def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=imaplib.IMAP4_SSL) -> tuple[list[dict], list[str]]:
+def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=None) -> tuple[list[dict], list[str]]:
     """Stellen der letzten Tage aus allen gewählten Postfächern und Hinweise zu Ausfällen. Schon gelesene Mails liegen
     ausgewertet in der Datenbank, abgerufen werden nur neue."""
     stellen, hinweise = [], []

@@ -41,9 +41,7 @@ def _ini(pfad: Path) -> configparser.RawConfigParser:
 
 def thunderbird(home: Path) -> list[Konto]:
     konten = []
-    wurzeln = [".thunderbird", ".var/app/org.mozilla.Thunderbird/.thunderbird", "snap/thunderbird/common/.thunderbird",
-               ".mozilla-thunderbird", "AppData/Roaming/Thunderbird/Profiles", "Library/Thunderbird/Profiles"]
-    for wurzel in wurzeln:
+    for wurzel in THUNDERBIRD_WURZELN:
         for prefs in sorted((home / wurzel).glob("*/prefs.js")):
             werte = dict(re.findall(r'user_pref\("([^"]+)",\s*"?([^")]*)"?\);', prefs.read_text("utf-8", errors="replace")))
             for schluessel, server in werte.items():
@@ -60,6 +58,32 @@ def thunderbird(home: Path) -> list[Konto]:
                                     sicherheit, werte.get(f"{praefix}.username", email),
                                     werte.get(f"{praefix}.authMethod") == "10"))
     return konten
+
+
+THUNDERBIRD_WURZELN = [".thunderbird", ".var/app/org.mozilla.Thunderbird/.thunderbird", "snap/thunderbird/common/.thunderbird",
+                       ".mozilla-thunderbird", "AppData/Roaming/Thunderbird/Profiles", "Library/Thunderbird/Profiles"]
+
+
+def thunderbird_eingang(home: Path | None = None) -> list[Konto]:
+    """IMAP-Posteingänge aus Thunderbird, für die Job-Alerts. socketType 3 ist SSL, 2 STARTTLS, authMethod 10 OAuth."""
+    home = home or Path.home()
+    konten = []
+    for wurzel in THUNDERBIRD_WURZELN:
+        for prefs in sorted((home / wurzel).glob("*/prefs.js")):
+            werte = dict(re.findall(r'user_pref\("([^"]+)",\s*"?([^")]*)"?\);', prefs.read_text("utf-8", errors="replace")))
+            for schluessel, typ in werte.items():
+                treffer = re.fullmatch(r"(mail\.server\.[^.]+)\.type", schluessel)
+                if not treffer or typ != "imap":
+                    continue
+                praefix = treffer.group(1)
+                host, benutzer = werte.get(f"{praefix}.hostname", ""), werte.get(f"{praefix}.userName", "")
+                if not host or not benutzer:
+                    continue
+                sicherheit = {"3": "ssl", "2": "starttls"}.get(werte.get(f"{praefix}.socketType", ""), "keine")
+                port = _zahl(werte.get(f"{praefix}.port"), 993 if sicherheit == "ssl" else 143)
+                konten.append(Konto("Thunderbird", benutzer if "@" in benutzer else "", host, port, sicherheit, benutzer,
+                                    werte.get(f"{praefix}.authMethod") == "10"))
+    return list(dict.fromkeys(konten))
 
 
 def evolution(home: Path) -> list[Konto]:

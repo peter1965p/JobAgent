@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, profil, quellen, rag, regeln, suche, versand
+from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand
 from . import start, theme
 from .anmelden import AnmeldeFenster
 from .schalter import Schalter
@@ -509,6 +509,79 @@ class FirmenSeite(Seite):
         self.f.starte("Bewertung lernen", lambda conn, _: lernen.merke_bewertung(conn, fid, score, notiz))
 
 
+class PostfachDialog(QDialog):
+    """Welche Posteingänge die App nach Job-Alerts durchsieht. Passwörter gehen in den Schlüsselbund."""
+
+    def __init__(self, parent, conn):
+        super().__init__(parent)
+        self.setWindowTitle("Postfächer für Job-Alerts")
+        self.setMinimumWidth(620)
+        lage = QVBoxLayout(self)
+        lage.addWidget(label("Die App liest nur Mails von Stellenportalen der letzten zwei Wochen, schreibgeschützt: Ungelesenes bleibt "
+                             "ungelesen, gelöscht oder verschoben wird nichts, Links in den Mails ruft sie nie auf. Für Gmail-Konten "
+                             "mit OAuth braucht es ein App-Passwort von Google.", "gedimmt", True))
+        gewaehlt = set(postfach.gewaehlte(conn))
+        vorschlaege = list(dict.fromkeys(postfach.vorschlaege(conn) + list(gewaehlt)))
+        raster = QGridLayout()
+        self.zeilen = []
+        for i, p in enumerate(vorschlaege):
+            haken = Schalter(f"{p.benutzer} auf {p.host}:{p.port} ({p.sicherheit})")
+            haken.setChecked(p in gewaehlt)
+            kennwort = QLineEdit()
+            kennwort.setEchoMode(QLineEdit.Password)
+            vorhanden = bool(postfach.passwort(conn, p))
+            kennwort.setPlaceholderText("Passwort gespeichert" if vorhanden else "App-Passwort" if p.oauth else "Passwort")
+            raster.addWidget(haken, i, 0)
+            raster.addWidget(kennwort, i, 1)
+            self.zeilen.append((p, haken, kennwort))
+        if not vorschlaege:
+            lage.addWidget(label("Kein Postfach gefunden. Die App liest die Konten aus Thunderbird und dem Versandkonto.", "hinweis", True))
+        lage.addLayout(raster)
+        knoepfe = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        knoepfe.accepted.connect(self.accept)
+        knoepfe.rejected.connect(self.reject)
+        lage.addWidget(knoepfe)
+
+    def speichere(self, conn):
+        for p, haken, kennwort in self.zeilen:
+            if haken.isChecked() and kennwort.text():
+                postfach.merke_passwort(p, kennwort.text())
+        postfach.waehle(conn, [p for p, haken, _ in self.zeilen if haken.isChecked()])
+
+
+class SchluesselDialog(QDialog):
+    """Schlüssel für Adzuna und Jooble. Beide sind kostenlos, verlangen aber eine Registrierung."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Schlüssel für Stellen-Aggregatoren")
+        self.setMinimumWidth(560)
+        form = QFormLayout(self)
+        hinweis = label("Registrieren unter <a href='https://developer.adzuna.com/'>developer.adzuna.com</a> und "
+                        "<a href='https://jooble.org/api/about'>jooble.org/api</a>. Die Schlüssel liegen im Schlüsselbund. "
+                        "Leer lassen: unverändert. Ein einzelnes Minus löscht den Schlüssel.", "gedimmt", True)
+        hinweis.setTextFormat(Qt.RichText)
+        hinweis.setOpenExternalLinks(True)
+        form.addRow(hinweis)
+        self.felder = {}
+        for name, text, vorlage in (("adzuna", "Adzuna", "app_id:app_key"), ("jooble", "Jooble", "Schlüssel")):
+            feld = QLineEdit()
+            feld.setEchoMode(QLineEdit.Password)
+            feld.setPlaceholderText("gespeichert" if quellen.api_schluessel(name) else vorlage)
+            self.felder[name] = feld
+            form.addRow(text, feld)
+        knoepfe = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        knoepfe.accepted.connect(self.accept)
+        knoepfe.rejected.connect(self.reject)
+        form.addRow(knoepfe)
+
+    def speichere(self):
+        for name, feld in self.felder.items():
+            wert = feld.text().strip()
+            if wert:
+                quellen.merke_api_schluessel(name, "" if wert == "-" else wert)
+
+
 class NachfrageDialog(QDialog):
     """Fragt nach, was die Prüfung in Lebenslauf und Zeugnis nicht gefunden hat. Leer heißt: trifft nicht zu."""
 
@@ -947,7 +1020,7 @@ class UnterlagenSeite(Seite):
 
 class SucheSeite(Seite):
     titel = "Suche"
-    untertitel = "Findet Firmen in Verzeichnis, Internet und Jobbörse, dann den Inhaber auf ihren eigenen Seiten"
+    untertitel = "Findet Firmen in Verzeichnis, Internet, Jobbörse, Job-Alerts und Portalen, dann den Inhaber auf ihren eigenen Seiten"
 
     def __init__(self, f):
         super().__init__(f)
@@ -1001,6 +1074,22 @@ class SucheSeite(Seite):
             reihe_quellen.addWidget(feld)
         reihe_quellen.addWidget(self.searxng, 1)
         karte.lage.addLayout(reihe_quellen)
+        # Stellen aus Alerts, Portalen und Aggregatoren. Diese Quellen liefern auch Fremdes, die Stichwörter sortieren es aus.
+        reihe_stellen = QHBoxLayout()
+        self.q_postfach = Schalter("Job-Alerts")
+        self.q_postfach.setToolTip("Liest Alert-Mails von LinkedIn, Indeed, StepStone, XING, Interamt und anderen aus deinem Postfach.")
+        self.q_portale = Schalter("Portale")
+        self.q_portale.setToolTip("LinkedIn und StepStone über SearXNG. Die App ruft die Portale nicht selbst ab.")
+        self.q_adzuna = Schalter("Adzuna")
+        self.q_jooble = Schalter("Jooble")
+        for feld in (self.q_postfach, self.q_portale, self.q_adzuna, self.q_jooble):
+            reihe_stellen.addWidget(feld)
+        self.stichwoerter = QLineEdit()
+        self.stichwoerter.setToolTip("Nur Stellen, deren Titel eines dieser Wörter enthält. Gilt für Alerts, Portale, Adzuna und Jooble.")
+        reihe_stellen.addWidget(self.stichwoerter, 1)
+        reihe_stellen.addWidget(knopf("Postfächer", self.postfaecher))
+        reihe_stellen.addWidget(knopf("Schlüssel", self.schluessel))
+        karte.lage.addLayout(reihe_stellen)
         reihe_knoepfe = QHBoxLayout()
         self.finden_knopf = knopf("Passende Firmen finden", self.passende_finden, True)
         reihe_knoepfe.addWidget(self.finden_knopf)
@@ -1010,7 +1099,7 @@ class SucheSeite(Seite):
         lage.addWidget(karte)
         ergebnis = Karte("Treffer")
         self.hinweis = label("Die Nähe vergleicht nur Name und Kurztext mit deinen Fakten, das ersetzt keine Bewertung. "
-                             "Daten: © OpenStreetMap-Mitwirkende, Stellen auch von arbeitnow.com.", "gedimmt", True)
+                             "Daten: © OpenStreetMap-Mitwirkende, Stellen auch von arbeitnow.com, Adzuna und Jooble.", "gedimmt", True)
         ergebnis.lage.addWidget(self.hinweis)
         self.ausfaelle = label("", "hinweis", True)
         ergebnis.lage.addWidget(self.ausfaelle)
@@ -1089,7 +1178,12 @@ class SucheSeite(Seite):
             self.q_internet.setChecked("internet" in gewaehlt)
             self.q_jobboerse.setChecked("jobboerse" in gewaehlt)
             self.q_arbeitnow.setChecked("arbeitnow" in gewaehlt)
+            for name, feld in self._stellenquellen():
+                feld.setChecked(name in gewaehlt)
+            self.stichwoerter.setText(lies("stichwoerter"))
             self._internet_moeglich()
+        abgeleitet = db.einstellung(self.conn, "suche.abgeleitet_stichwoerter", "")
+        self.stichwoerter.setPlaceholderText(f"Stichwörter, leer: {abgeleitet}" if abgeleitet else "Stichwörter für Titel, leer: aus den Suchbegriffen")
         self._zeige()
 
     def _zeige(self):
@@ -1102,9 +1196,31 @@ class SucheSeite(Seite):
                            "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else ""))
         fuelle(self.tab, zeilen, list(self.treffer))
 
+    def _stellenquellen(self):
+        return (("postfach", self.q_postfach), ("portale", self.q_portale), ("adzuna", self.q_adzuna), ("jooble", self.q_jooble))
+
+    def postfaecher(self):
+        dialog = PostfachDialog(self, self.conn)
+        if dialog.exec() == QDialog.Accepted:
+            try:
+                dialog.speichere(self.conn)
+            except quellen.SucheFehler as fehler:
+                return self.f.melde(str(fehler))
+            self.q_postfach.setChecked(bool(postfach.gewaehlte(self.conn)))
+
+    def schluessel(self):
+        dialog = SchluesselDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            try:
+                dialog.speichere()
+            except quellen.SucheFehler as fehler:
+                self.f.melde(str(fehler))
+
     def _auftrag(self) -> suche.Auftrag:
+        db.setze_einstellung(self.conn, "suche.stichwoerter", ", ".join(suche.bereinige_stichwoerter(self.stichwoerter.text().split(","))))
         gewaehlt = tuple(name for name, feld in (("verzeichnis", self.q_verzeichnis), ("internet", self.q_internet),
-                                                 ("jobboerse", self.q_jobboerse), ("arbeitnow", self.q_arbeitnow)) if feld.isChecked())
+                                                 ("jobboerse", self.q_jobboerse), ("arbeitnow", self.q_arbeitnow),
+                                                 *self._stellenquellen()) if feld.isChecked())
         auftrag = suche.Auftrag(self.was.text(), self.wo.text().strip(), self.land.currentData(), self.umkreis.currentData(),
                                 self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData())
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),

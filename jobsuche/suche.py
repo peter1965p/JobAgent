@@ -80,9 +80,13 @@ BEGRIFFE_SCHEMA = {
     "properties": {
         "berufe": {"type": "array", "items": {"type": "string"}},
         "branche": {"type": "string", "enum": list(quellen.BRANCHEN)},
+        "stichwoerter": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["berufe", "branche"],
+    "required": ["berufe", "branche", "stichwoerter"],
 }
+# IT-Berufe landen beim Modell gern unter „technik“. Im Verzeichnis sind das Ingenieurbüros, Systemhäuser fehlen dann.
+IT_BERUF = re.compile(r"(?i)(?:^|[\s-])(?:it|edv)(?:$|[\s-])|software|informatik|entwickler|developer|administrator|devops|"
+                      r"netzwerk|systembetreu|support|helpdesk|programmier|cloud|daten(?:bank)?")
 MAX_BEGRIFFE = 6
 VERZEICHNIS_FRISCH = timedelta(days=7)  # Firmeneinträge ändern sich langsam, die OSM-Server sind oft überlastet.
 GLEICHZEITIGE_SEITEN = 8  # Jede Website wird nur einmal gleichzeitig abgerufen, belastet wird also keine einzelne.
@@ -118,18 +122,121 @@ def leite_begriffe_ab(conn: sqlite3.Connection, modell: str, chat=llm.chat) -> l
         "Du liest die Fakten über einen Bewerber und nennst Berufsbezeichnungen, unter denen er passende Stellen und "
         f"Firmen findet. Höchstens {MAX_BEGRIFFE}, die passendsten zuerst, jeweils höchstens drei Wörter, so wie sie in "
         "echten Stellenanzeigen stehen. Nur was die Fakten belegen, keine Wunschberufe. Wähle unter branche, wo solche "
-        "Firmen am ehesten zu finden sind."
+        "Firmen am ehesten zu finden sind: it für Software, Systemhäuser, Administration und Support, technik nur für "
+        "Ingenieur- und Planungsbüros. Unter stichwoerter nennst du bis zu zehn kurze Wörter, an denen man passende "
+        "Stellentitel erkennt, zum Beispiel Administrator, Support, Entwickler."
     )
     antwort = chat(modell, system, "\n".join(f"- {f}" for f in fakten), BEGRIFFE_SCHEMA, 0.2)
     begriffe = bereinige_begriffe(antwort.get("berufe"))
     if not begriffe:
         raise SucheFehler("Das Modell hat keine brauchbaren Berufe genannt. Trage Suchbegriffe von Hand ein.")
     db.setze_einstellung(conn, "suche.abgeleitet", ", ".join(begriffe))
-    if antwort.get("branche") in quellen.BRANCHEN:
-        db.setze_einstellung(conn, "suche.abgeleitet_branche", antwort["branche"])
+    branche = antwort.get("branche")
+    if branche == "technik" and sum(bool(IT_BERUF.search(b)) for b in begriffe) * 2 >= len(begriffe):
+        branche = "it"
+    if branche in quellen.BRANCHEN:
+        db.setze_einstellung(conn, "suche.abgeleitet_branche", branche)
+    stichwoerter = bereinige_stichwoerter(antwort.get("stichwoerter"))
+    if stichwoerter:
+        db.setze_einstellung(conn, "suche.abgeleitet_stichwoerter", ", ".join(stichwoerter))
     db.setze_einstellung(conn, "suche.fakten_stand", pruefsumme)
     db.protokolliere(conn, "Suchbegriffe abgeleitet", f"{len(begriffe)} Begriffe, Modell {modell}")
     return begriffe
+
+
+MAX_STICHWOERTER = 15
+
+
+def bereinige_stichwoerter(werte) -> list[str]:
+    ergebnis: list[str] = []
+    for wert in werte if isinstance(werte, list) else []:
+        wort = str(wert).strip(" .,;()")
+        if 2 <= len(wort) <= 30 and len(wort.split()) <= 2 and wort.lower() not in map(str.lower, ergebnis):
+            ergebnis.append(wort)
+    return ergebnis[:MAX_STICHWOERTER]
+
+
+def stichwoerter(conn: sqlite3.Connection, begriffe: list[str]) -> list[str]:
+    """Woran die App bei Alerts und Portalen passende Titel erkennt. Eigene Angaben gehen vor denen des Modells, ohne beide
+    zählen die Suchbegriffe und ihre Teile. Geändert werden sie auf der Suchseite."""
+    for schluessel in ("suche.stichwoerter", "suche.abgeleitet_stichwoerter"):
+        eigene = [w.strip() for w in db.einstellung(conn, schluessel, "").split(",") if w.strip()]
+        if eigene:
+            return eigene
+    teile = [t for b in begriffe for t in re.split(r"[\s/-]+", b) if len(t) >= 2]
+    return bereinige_stichwoerter(begriffe + teile)
+
+
+def passt_stichwort(titel: str, woerter: list[str]) -> bool:
+    """Kurze Wörter wie IT nur als ganzes Wort, sonst stünde IT in jedem „Mitarbeiter“."""
+    klein = titel.lower()
+    for wort in (w.lower() for w in woerter):
+        if len(wort) >= 5 and wort in klein:
+            return True
+        if len(wort) < 5 and re.search(rf"(?<![a-zäöüß]){re.escape(wort)}(?![a-zäöüß])", klein):
+            return True
+    return False
+
+
+MAX_NEUE_ORTE = 40  # Nominatim erlaubt eine Anfrage pro Sekunde, gemerkte Orte kosten nichts.
+
+
+def _ort_koordinaten(conn: sqlite3.Connection, ort: str, land: str, client, budget: list[int]) -> tuple[float, float] | None | str:
+    """Koordinaten, None für unbekannt oder "offen", wenn das Budget für neue Anfragen aufgebraucht ist."""
+    schluessel = f"cache.ort.{land}.{ort.lower()}"
+    gemerkt = db.einstellung(conn, schluessel, "")
+    if gemerkt:
+        return json.loads(gemerkt)
+    if budget[0] <= 0:
+        return "offen"
+    budget[0] -= 1
+    punkt = quellen.koordinaten_des_orts(ort, land, client)
+    db.setze_einstellung(conn, schluessel, json.dumps(punkt))
+    return punkt
+
+
+def filtere_stellen(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftrag, begriffe: list[str], name: str,
+                    melde=lambda _: None, client=None) -> tuple[list[dict], str]:
+    """Alerts, Portale und Aggregatoren liefern auch Fremdes: Stellen anderer Berufe und anderer Orte. Fernarbeit bleibt,
+    ein unbekannter Ort auch, beides steht dann im Hinweis."""
+    if not treffer:
+        return [], ""
+    woerter = stichwoerter(conn, begriffe)
+    passend = [t for t in treffer if not woerter or passt_stichwort(t["titel"], woerter)]
+    fremd_beruf = len(treffer) - len(passend)
+    zu_weit = unklar = 0
+    bleiben = passend
+    if auftrag.ort.strip() and passend:
+        try:
+            gebiet = quellen.finde_gebiet(auftrag.ort, auftrag.land, client)
+        except SucheFehler:
+            gebiet = None
+        if gebiet:
+            melde(f"{name}: prüfe die Orte von {len(passend)} Stellen")
+            bleiben, budget = [], [MAX_NEUE_ORTE]
+            for t in passend:
+                ort = quellen.ortsname(t.get("ort", ""))
+                if quellen.FERN.search(t.get("ort", "")) or not ort:
+                    unklar += not quellen.FERN.search(t.get("ort", ""))
+                    bleiben.append(t)
+                    continue
+                try:
+                    punkt = _ort_koordinaten(conn, ort, auftrag.land, client, budget)
+                except SucheFehler:
+                    punkt = "offen"
+                if punkt is None or punkt == "offen":
+                    unklar += 1
+                    bleiben.append(t)
+                elif quellen.liegt_im_gebiet(gebiet, auftrag.umkreis, *punkt):
+                    bleiben.append({**t, "entfernung": t.get("entfernung") or quellen._km(gebiet.lat, gebiet.lon, *punkt)})
+                else:
+                    zu_weit += 1
+    teile = [text for zahl, text in ((fremd_beruf, f"{fremd_beruf} mit anderem Beruf"), (zu_weit, f"{zu_weit} außerhalb des Gebiets"))
+             if zahl]
+    hinweis = f"{name}: aussortiert {', '.join(teile)}." if teile else ""
+    if unklar:
+        hinweis = (hinweis + " " if hinweis else f"{name}: ") + f"Bei {unklar} ist der Ort unklar, sie bleiben drin."
+    return bleiben, hinweis
 
 
 def suchort(conn: sqlite3.Connection) -> str:
@@ -260,7 +367,7 @@ def nur_im_gebiet(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftra
     return bleiben, f"Internet: aussortiert, weil der Firmensitz nicht passt: {', '.join(teile)}." if teile else ""
 
 
-def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: None, client=None) -> dict:
+def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: None, client=None, imap_klasse=None) -> dict:
     """Fällt eine Quelle aus, liefern die anderen weiter. Der Ausfall steht dann in `hinweise`."""
     auftrag.begriffe = auftrag.begriffe.strip() or db.einstellung(conn, "suche.abgeleitet", "")
     begriffe = [b.strip() for b in auftrag.begriffe.split(",") if b.strip()]
@@ -301,7 +408,7 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
                 hinweise.append(hinweis)
             return passend
         quelle("Internet", internet)
-    if not begriffe and {"jobboerse", "arbeitnow"} & set(auftrag.quellen):
+    if not begriffe and {"jobboerse", "arbeitnow", "portale", "adzuna", "jooble"} & set(auftrag.quellen):
         hinweise.append("Stellenbörsen übersprungen: Es fehlen noch Berufe. „Passende Firmen finden“ leitet sie aus deinen Fakten ab.")
     elif "jobboerse" in auftrag.quellen:
         if auftrag.land != "de":
@@ -311,6 +418,38 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
             quelle("Jobbörse", lambda: suche(auftrag.begriffe, auftrag.ort or "Deutschland", auftrag.umkreis or 200, client, auftrag.arbeitszeit))
     if begriffe and "arbeitnow" in auftrag.quellen:
         quelle("Arbeitnow", lambda: quellen.stellenportal(begriffe, auftrag.ort, client, auftrag.arbeitszeit))
+
+    def gefiltert(name, liste):
+        bleiben, hinweis = filtere_stellen(conn, liste, auftrag, begriffe, name, melde, client)
+        if hinweis:
+            hinweise.append(hinweis)
+        return bleiben
+
+    if "postfach" in auftrag.quellen:
+        def alerts():
+            from . import postfach  # Erst hier: Das Modul braucht den Schlüsselbund.
+            stellen, ausfaelle = postfach.lies_alerts(conn, melde, imap_klasse)
+            hinweise.extend(ausfaelle)
+            return gefiltert("Job-Alerts", stellen)
+        quelle("Job-Alerts", alerts)
+    if "portale" in auftrag.quellen:
+        if not auftrag.searxng.strip():
+            hinweise.append("Portale: Dafür braucht es die SearXNG-Adresse.")
+        elif begriffe:
+            def portale():
+                stellen, ausfaelle = quellen.portale(begriffe, auftrag.ort, auftrag.land, auftrag.searxng, client)
+                hinweise.extend(ausfaelle)
+                return gefiltert("Portale", stellen)
+            quelle("Portale", portale)
+    for name, schluessel, abruf in (("Adzuna", "adzuna", quellen.adzuna), ("Jooble", "jooble", quellen.jooble)):
+        if schluessel not in auftrag.quellen or not begriffe:
+            continue
+        api = quellen.api_schluessel(schluessel)
+        if not api:
+            hinweise.append(f"{name}: Es ist noch kein Schlüssel hinterlegt.")
+            continue
+        quelle(name, lambda abruf=abruf, api=api, name=name: gefiltert(
+            name, abruf(begriffe, auftrag.ort, auftrag.umkreis, auftrag.land, api, client)))
     if auftrag.arbeitszeit and {"verzeichnis", "internet"} & set(auftrag.quellen):
         hinweise.append(f"Arbeitszeit: Verzeichnis und Internet liefern Firmen, keine Stellen. Dort gilt „{ARBEITSZEIT[auftrag.arbeitszeit]}“ nicht.")
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
@@ -354,9 +493,10 @@ def bewerte_naehe(conn: sqlite3.Connection, treffer: list[dict]) -> list[dict]:
 def anzeigentext(stelle: dict, client=None) -> str:
     """Volltext der Stellenanzeige. Arbeitnow liefert ihn mit der Liste, die Jobbörse auf Nachfrage. Ein Ausfall ist kein Fehler."""
     referenz = str(stelle.get("referenz", ""))
-    if referenz.startswith("arbeitnow:"):
-        return firmen.text_aus_html(html.unescape(stelle.get("beschreibung", "")))[:MAX_ANZEIGE]
-    if not referenz or referenz.startswith(("osm:", "web:")):
+    if stelle.get("beschreibung"):
+        return firmen.text_aus_html(html.unescape(stelle["beschreibung"]))[:MAX_ANZEIGE]
+    # Nur Jobbörsen-Nummern haben keinen Doppelpunkt. Alerts, Portale und Aggregatoren liefern höchstens einen Schnipsel.
+    if not referenz or ":" in referenz:
         return ""
     client = client or httpx.Client(timeout=20, headers={"User-Agent": config.USER_AGENT})
     try:

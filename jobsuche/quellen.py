@@ -4,6 +4,8 @@ Beide liefern Firmen mit Website. Inhaber und Mailadresse liest danach `firmen.l
 Nach außen gehen nur Gebiet, Branche und Suchbegriffe, nie Fakten oder Namen der suchenden Person.
 """
 
+import hashlib
+import html
 import math
 import re
 import time
@@ -373,3 +375,202 @@ def name_passt(firma: str, seitentext: str) -> bool:
     if not woerter or woerter[0] not in text:
         return False
     return len(woerter) == 1 or any(w in text for w in woerter[1:])
+
+
+# --- Orte aus Stellenangaben ------------------------------------------------------------------------------------------
+
+FERN = re.compile(r"(?i)\b(?:remote|home\s*-?office|mobiles? arbeiten|deutschlandweit|bundesweit|ortsunabhängig|100\s*%\s*remote)\b")
+
+
+def ortsname(text: str) -> str:
+    """„34117 Kassel (Vor Ort)“, „Kassel, Hessen, Deutschland“ und „| Kassel |“ werden zu „Kassel“."""
+    text = re.sub(r"\([^)]*\)", " ", text or "")
+    teil = next((t for t in re.split(r"[,|;/]", text) if t.strip()), "")
+    teil = re.sub(r"\b\d{4,5}\b", " ", teil)
+    return " ".join(teil.split())[:60]
+
+
+def koordinaten_des_orts(ort: str, land: str, client: httpx.Client | None = None) -> tuple[float, float] | None:
+    """None: Den Ort gibt es so nicht. Ein Ausfall des Dienstes wirft `SucheFehler`."""
+    try:
+        antwort = _frage_nominatim(_client(client), {"q": ort, "countrycodes": land, "format": "jsonv2", "limit": 1})
+    except httpx.HTTPError as fehler:
+        raise SucheFehler(f"Der Ortsdienst ist nicht erreichbar: {fehler}") from fehler
+    if antwort.status_code != 200:
+        raise SucheFehler(f"Der Ortsdienst meldet {antwort.status_code}.")
+    treffer = antwort.json()
+    return (float(treffer[0]["lat"]), float(treffer[0]["lon"])) if treffer else None
+
+
+# --- Stellenportale über die eigene Suchmaschine ----------------------------------------------------------------------
+# Die App ruft die Portale selbst nie ab, sie liest nur Titel und Schnipsel aus der Trefferliste. Geöffnet wird die
+# Anzeige von der Person im Browser.
+
+MAX_PORTAL_BEGRIFFE = 3  # Je Portal und Begriff eine Anfrage. Mehr bringt die Suchmaschinen hinter SearXNG zum Sperren.
+LINKEDIN_TITEL = re.compile(r"^(?P<titel>.+?) bei (?P<firma>.+?) — (?P<ort>.+?)(?:\s*[-|]\s*LinkedIn.*|\s*\.\.\.)?$")
+LINKEDIN_SUCHT = re.compile(r"^(?P<firma>.+?) sucht (?P<titel>.+?) in (?P<ort>.+?)\s*\|\s*LinkedIn")
+LINKEDIN_TEXT = re.compile(r"Stelle als (?P<titel>.+?) bei (?P<firma>.+?) in (?P<ort>[^.]+?)\. ")
+STEPSTONE_TEXT = re.compile(r"Stellenangebot als (?P<titel>.+?) in (?:\d{5}\s+)?(?P<ort>.+?) bei der Firma (?P<firma>.+?)\.(?:\s|$)")
+
+
+@dataclass(frozen=True)
+class Stellenportal:
+    name: str
+    site: str
+    adresse: re.Pattern
+    muster: tuple[tuple[re.Pattern, str], ...]  # (Muster, "title" oder "content")
+
+
+STELLENPORTALE = (
+    Stellenportal("LinkedIn", "linkedin.com/jobs/view", re.compile(r"linkedin\.com/jobs/view/"),
+                  ((LINKEDIN_TITEL, "title"), (LINKEDIN_SUCHT, "title"), (LINKEDIN_TEXT, "content"))),
+    Stellenportal("StepStone", "stepstone.de/stellenangebote--", re.compile(r"stepstone\.de/stellenangebote--"),
+                  ((STEPSTONE_TEXT, "content"),)),
+)
+
+
+def _portal_kennung(url: str, portal: str) -> tuple[str, str]:
+    if portal == "LinkedIn":
+        nummer = re.search(r"(\d{8,})(?:[/?]|$)", url)
+        if nummer:
+            return f"https://www.linkedin.com/jobs/view/{nummer.group(1)}/", f"linkedin:{nummer.group(1)}"
+    if portal == "StepStone":
+        nummer = re.search(r"--(\d{5,})(?:-inline)?\.html", url)
+        if nummer:
+            return url.split("?")[0], f"stepstone:{nummer.group(1)}"
+    return url, f"{portal.lower()}:{hashlib.sha1(url.encode()).hexdigest()[:16]}"
+
+
+def stelle_aus_treffer(ergebnis: dict, portal: Stellenportal) -> dict | None:
+    url = str(ergebnis.get("url", ""))
+    if not portal.adresse.search(url):
+        return None
+    felder = {"title": html.unescape(str(ergebnis.get("title", ""))), "content": html.unescape(str(ergebnis.get("content", "")))}
+    for muster, feld in portal.muster:
+        treffer = muster.search(felder[feld])
+        if treffer and "..." not in treffer.group("firma") and len(treffer.group("firma")) >= 2:
+            adresse, kennung = _portal_kennung(url, portal.name)
+            return {"referenz": kennung, "firma": treffer.group("firma").strip()[:120], "titel": treffer.group("titel").strip()[:200],
+                    "beruf": "", "ort": treffer.group("ort").strip()[:80], "entfernung": None, "url": adresse, "website": "",
+                    "quelle": portal.name, "beschreibung": ""}
+    return None
+
+
+def portale(begriffe: list[str], ort: str, land: str, searxng: str, client: httpx.Client | None = None) -> tuple[list[dict], list[str]]:
+    """Stellen von LinkedIn und StepStone, gefunden über die eigene SearXNG-Instanz."""
+    basis = searxng.strip().rstrip("/")
+    if not basis:
+        raise SucheFehler("Für die Portalsuche fehlt die Adresse deiner SearXNG-Instanz.")
+    client = _client(client)
+    treffer: dict[str, dict] = {}
+    gesperrt: set[str] = set()
+    for portal in STELLENPORTALE:
+        for begriff in begriffe[:MAX_PORTAL_BEGRIFFE]:
+            try:
+                antwort = client.get(f"{basis}/search", params={"q": f"site:{portal.site} {begriff} {ort}".strip(), "format": "json",
+                                                                "language": SPRACHE.get(land, "de-DE")})
+            except httpx.HTTPError as fehler:
+                raise SucheFehler(f"SearXNG ist nicht erreichbar: {fehler}") from fehler
+            if antwort.status_code != 200:
+                raise SucheFehler(f"SearXNG meldet {antwort.status_code}.")
+            daten = antwort.json()
+            gesperrt.update(str(e[0]) for e in daten.get("unresponsive_engines", []) if e)
+            for ergebnis in daten.get("results", []):
+                stelle = stelle_aus_treffer(ergebnis, portal)
+                if stelle:
+                    treffer.setdefault(stelle["referenz"], stelle)
+    hinweise = [f"Portale: Suchmaschinen gerade gesperrt oder überlastet ({', '.join(sorted(gesperrt))}), "
+                "es fehlen vermutlich Treffer."] if gesperrt else []
+    return list(treffer.values()), hinweise
+
+
+# --- Aggregatoren mit eigenem Schlüssel -------------------------------------------------------------------------------
+# Beide verlangen eine kostenlose Registrierung. Der Schlüssel liegt im Schlüsselbund, nie in der Datenbank.
+
+ADZUNA = "https://api.adzuna.com/v1/api/jobs/{land}/search/{seite}"
+JOOBLE = "https://{land}.jooble.org/api/{schluessel}"
+JOOBLE_RADIEN = (0, 4, 8, 16, 26, 40, 80)  # Laut Doku feste Stufen in km, nicht geprüft
+
+
+def api_schluessel(name: str) -> str:
+    import keyring
+    from keyring.errors import KeyringError
+    from . import versand
+    try:
+        return keyring.get_password(versand.DIENST, f"api:{name}") or ""
+    except KeyringError:
+        return ""
+
+
+def merke_api_schluessel(name: str, wert: str) -> None:
+    import keyring
+    from keyring.errors import KeyringError
+    from . import versand
+    try:
+        if wert.strip():
+            keyring.set_password(versand.DIENST, f"api:{name}", wert.strip())
+        elif keyring.get_password(versand.DIENST, f"api:{name}"):
+            keyring.delete_password(versand.DIENST, f"api:{name}")
+    except KeyringError as fehler:
+        raise SucheFehler(f"Der Schlüsselbund ist nicht verfügbar: {fehler}") from fehler
+
+
+def _ohne_tags(text: str) -> str:
+    ohne_inline = re.sub(r"(?i)</?(?:strong|b|em|i|span|u|mark)\b[^>]*>", "", str(text or ""))
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", ohne_inline)).split())
+
+
+def adzuna(begriffe: list[str], ort: str, umkreis: int, land: str, schluessel: str, client: httpx.Client | None = None) -> list[dict]:
+    """Schlüssel als „app_id:app_key“."""
+    app_id, _, app_key = schluessel.partition(":")
+    if not app_id or not app_key:
+        raise SucheFehler("Der Adzuna-Schlüssel braucht die Form app_id:app_key.")
+    client = _client(client)
+    treffer: dict[str, dict] = {}
+    for begriff in begriffe[:MAX_PORTAL_BEGRIFFE]:
+        params = {"app_id": app_id, "app_key": app_key, "what": begriff, "results_per_page": 50, "max_days_old": 30}
+        if ort:
+            params.update(where=ort, distance=umkreis or 50)
+        try:
+            antwort = client.get(ADZUNA.format(land=land, seite=1), params=params)
+        except httpx.HTTPError as fehler:
+            raise SucheFehler(f"Adzuna ist nicht erreichbar: {fehler}") from fehler
+        if antwort.status_code in (401, 403):
+            raise SucheFehler("Adzuna lehnt den Schlüssel ab.")
+        if antwort.status_code != 200:
+            raise SucheFehler(f"Adzuna meldet {antwort.status_code}.")
+        for stelle in antwort.json().get("results", []):
+            firma = _ohne_tags((stelle.get("company") or {}).get("display_name", ""))
+            if not firma or not stelle.get("id"):
+                continue
+            treffer.setdefault(str(stelle["id"]), {
+                "referenz": f"adzuna:{stelle['id']}", "firma": firma[:120], "titel": _ohne_tags(stelle.get("title"))[:200], "beruf": "",
+                "ort": _ohne_tags((stelle.get("location") or {}).get("display_name", ""))[:80], "entfernung": None,
+                "url": str(stelle.get("redirect_url", "")), "website": "", "quelle": "Adzuna",
+                "beschreibung": _ohne_tags(stelle.get("description"))[:5000]})
+    return list(treffer.values())
+
+
+def jooble(begriffe: list[str], ort: str, umkreis: int, land: str, schluessel: str, client: httpx.Client | None = None) -> list[dict]:
+    client = _client(client)
+    radius = min(JOOBLE_RADIEN, key=lambda r: abs(r - (umkreis or 40)))
+    treffer: dict[str, dict] = {}
+    for begriff in begriffe[:MAX_PORTAL_BEGRIFFE]:
+        try:
+            antwort = client.post(JOOBLE.format(land=land, schluessel=schluessel.strip()),
+                                  json={"keywords": begriff, "location": ort, "radius": str(radius), "page": "1"})
+        except httpx.HTTPError as fehler:
+            raise SucheFehler(f"Jooble ist nicht erreichbar: {fehler}") from fehler
+        if antwort.status_code in (401, 403):
+            raise SucheFehler("Jooble lehnt den Schlüssel ab.")
+        if antwort.status_code != 200:
+            raise SucheFehler(f"Jooble meldet {antwort.status_code}.")
+        for stelle in antwort.json().get("jobs", []):
+            firma = _ohne_tags(stelle.get("company"))
+            if not firma or not stelle.get("id"):
+                continue
+            treffer.setdefault(str(stelle["id"]), {
+                "referenz": f"jooble:{stelle['id']}", "firma": firma[:120], "titel": _ohne_tags(stelle.get("title"))[:200], "beruf": "",
+                "ort": _ohne_tags(stelle.get("location"))[:80], "entfernung": None, "url": str(stelle.get("link", "")), "website": "",
+                "quelle": "Jooble", "beschreibung": _ohne_tags(stelle.get("snippet"))[:5000]})
+    return list(treffer.values())

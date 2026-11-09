@@ -24,9 +24,12 @@ PAUSE = 600
 NAME = "tueroeffner-nacht"
 
 
+STELLENQUELLEN = ("Jobbörse", "Arbeitnow", "(Alert)", "LinkedIn", "StepStone", "Adzuna", "Jooble")
+
+
 def ist_direkt(treffer: dict) -> bool:
     """Die Firma kam nicht über eine Stellenbörse, inseriert dort also zumindest bei dieser Suche nicht."""
-    return not any(name in treffer["quelle"] for name in ("Jobbörse", "Arbeitnow"))
+    return not any(name in treffer["quelle"] for name in STELLENQUELLEN)
 
 
 def _gesehen(conn: sqlite3.Connection) -> set[str]:
