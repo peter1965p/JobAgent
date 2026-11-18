@@ -1742,6 +1742,12 @@ def test_stellenseite_auf_eigener_karriere_domain_liefert_ansprechperson(conn):
     assert conn.execute("SELECT count(*) FROM chunks WHERE firma_id = ? AND quelle = ?", (fid, angebot + firmen.STELLENSEITE)).fetchone()[0]
 
 
+def test_schwester_link_ohne_domainnamen_stuerzt_nicht_ab():
+    # Firmenseiten verlinken manchmal auf http://intranet/ oder http://localhost/: das darf die Suche nicht abbrechen
+    assert not firmen._schwester("http://intranet/karriere", "muster.de")
+    assert not firmen._schwester("http://localhost/jobs", "muster.de")
+
+
 def test_schwester_domain_nur_mit_firmenname_und_karriere():
     assert firmen._schwester("https://www.muster-karriere.de/", "muster.de")
     assert firmen._schwester("https://karriere.muster.de/", "muster.de")

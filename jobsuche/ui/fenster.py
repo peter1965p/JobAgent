@@ -54,7 +54,7 @@ class Aufgabe(QRunnable):
         except (ValueError, RuntimeError, ki.NichtMoeglich, llm.LLMFehler, versand.VersandFehler, suche.SucheFehler) as fehler:
             self.signale.fehler.emit(self.nummer, str(fehler))
         except Exception:
-            self.signale.fehler.emit(self.nummer, traceback.format_exc(limit=4))
+            self.signale.fehler.emit(self.nummer, traceback.format_exc(limit=-6))   # die letzten Zeilen: dort steht die Ursache
         finally:
             conn.close()
 

@@ -304,7 +304,7 @@ def _schwester(url: str, domain: str) -> bool:
     Stellenseite der Firma bei einem Bewerbermanagement-System, aber nicht dessen Werbelink „powered by“ auf die Startseite."""
     teile = urlsplit(url)
     host, kern = _host(url), domain.split(".")[0]
-    if not host or host == domain:
+    if not host or host == domain or "." not in host:   # Links wie http://intranet/ haben keinen Domainnamen
         return False
     if BEWERBERSYSTEM.search(host):
         basis = BEWERBERSYSTEM.search(host).group(0).lstrip(".")
