@@ -727,3 +727,37 @@ def test_variantendialog_uebernimmt_die_gewaehlte_fassung(app):
     d.texte[1].setPlainText("Text B geändert")
     d._uebernehmen()
     assert d.gewaehlt == "Text B geändert"
+
+
+def test_firmenliste_mehrere_entfernen_gesendete_bleiben(app, f):
+    ids = [f.conn.execute("INSERT INTO firmen (name, email) VALUES (?, 'a@x.de')", (n,)).lastrowid for n in ("A GmbH", "B GmbH", "C GmbH")]
+    f.conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt, status) "
+                   "VALUES (?, 'a@x.de', 'b', 't', 't', 'm', ?, 'gesendet')", (ids[2], db.jetzt()))
+    f.conn.commit()
+    f.zeige_seite(fenster.FirmenSeite)
+    s = f.stapel.currentWidget()
+    s.tab.selectAll()
+    meldungen = []
+    f.frage = lambda text: True
+    f.melde = meldungen.append
+    s.entfernen()
+    namen = [z[0] for z in f.conn.execute("SELECT name FROM firmen")]
+    assert namen == ["C GmbH"] and "C GmbH" in meldungen[0]
+
+
+def test_entwurf_loeschen_verwirft_und_gesendete_bleiben(app, f):
+    from jobsuche import ki
+    fid = f.conn.execute("INSERT INTO firmen (name, email) VALUES ('X GmbH', 'a@x.de')").lastrowid
+    eid = f.conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt) "
+                         "VALUES (?, 'a@x.de', 'b', 't', 't', 'm', ?)", (fid, db.jetzt())).lastrowid
+    f.conn.commit()
+    f.zeige_seite(fenster.EntwurfSeite)
+    s = f.stapel.currentWidget()
+    f.frage = lambda text: True
+    s.loeschen()
+    assert f.conn.execute("SELECT status FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0] == "verworfen"
+    assert s.liste.count() == 0
+    f.conn.execute("UPDATE entwuerfe SET status = 'gesendet' WHERE id = ?", (eid,))
+    f.conn.commit()
+    with pytest.raises(ki.NichtMoeglich):
+        ki.verwirf_entwurf(f.conn, eid)

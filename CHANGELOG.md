@@ -2,6 +2,18 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.2.2 – 2026-11-20
+
+### Neu
+- **Firmenliste:** mehrere Firmen markieren (Strg/Umschalt) und mit Entf, Rechtsklick oder „Entfernen“ löschen. Firmen, an die schon eine Mail ging, bleiben erhalten.
+- **„Entwurf löschen“** unter der Mail-Liste: Der Entwurf wird verworfen und protokolliert, gesendet wird er nie.
+- **Gehaltsvorstellung** im Profil: Fragt eine Anzeige ausdrücklich danach, hängt die App genau einen festen Satz an. Jede andere Gehaltsangabe bleibt gesperrt.
+- **Kennziffer** aus der Anzeige („Kennziffer ERP-2026“) landet automatisch im Betreff.
+
+### Behoben
+- „Invalid IPv6 URL“: Kaputte Links auf Firmenseiten (etwa aus Cookie-Bannern) brachen die Suche nach dem Inhaber ab. Sie werden jetzt übersprungen.
+- Umbrochene Listenpunkte in Anzeigen („idealerweise ↵ proALPHA“) beendeten das Lesen der Anforderungen nach dem ersten Punkt. Die Eignung stand dann fälschlich bei 100 %.
+
 ## 0.2.1 – 2026-11-20
 
 ### Geändert

@@ -2058,3 +2058,32 @@ def test_signatur_aus_dem_profil_steht_unter_der_mail_und_ist_belegt(conn, tmp_p
     text = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
     assert text.endswith("Viele Grüße\nTest\n\n" + signatur)
     assert not regeln.gesperrt(ki.pruefe_entwurf(conn, eid))  # Telefon und Links der Signatur sind belegt
+
+
+def test_gehalt_nur_als_fester_satz_wenn_die_anzeige_fragt_und_kennziffer_im_betreff(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    db.setze_einstellung(conn, "mail.gehalt", "62.000 € brutto im Jahr")
+    regeln.lege_regel_an(conn, "verboten", "62.000", meldung="Gehalt gehört nicht in die Erstmail.")
+    client, _ = _netz_anzeige(ANZEIGE_TEXT + "\n\nBewerbung mit Gehaltsvorstellung unter Angabe der Kennziffer „ERP-2026“.")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
+    eid = ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+    betreff, text = conn.execute("SELECT betreff, text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()
+    assert "Meine Gehaltsvorstellung liegt bei 62.000 € brutto im Jahr." in text and "(Kennziffer ERP-2026)" in betreff
+    assert not regeln.gesperrt(ki.pruefe_entwurf(conn, eid))
+    # Jede andere Gehaltsangabe bleibt gesperrt.
+    ki.speichere_text(conn, eid, betreff, text + "\nNotfalls auch 58.000 Euro.")
+    assert regeln.gesperrt(ki.pruefe_entwurf(conn, eid))
+    # Ohne Frage in der Anzeige kommt kein Gehalt in die Mail.
+    andere = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    text2 = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (ki.erstelle_entwurf(conn, andere, "m", _Eignung({})),)).fetchone()[0]
+    assert "Gehalt" not in text2
+
+
+def test_umbrochener_listenpunkt_und_kaputter_ipv6_link():
+    teil = ("**Dein Profil:**\n\n**Fachliche Qualifikation:**\n\n- Kenntnisse in ERP-Systemen, idealerweise\nproALPHA\n"
+            "- Gute SQL-Kenntnisse\n\n\\*\\*Persönliche Stärken:\\*\\*\n\n- Teamgeist")
+    assert ki.anforderungen_aus_liste(ki._anforderungsteil(teil)) == [
+        "Kenntnisse in ERP-Systemen, idealerweise proALPHA", "Gute SQL-Kenntnisse"]
+    html = ('<a href="http://[borlabs-cookie%20type=btn/%5D">x</a><a href="/impressum">Impressum</a>')
+    assert firmen._links(html, "https://www.contech.de/") == ["https://www.contech.de/impressum"]

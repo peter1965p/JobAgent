@@ -284,7 +284,11 @@ def _links(html: str, basis: str, muster: re.Pattern | None = None) -> list[str]
     muster = muster or RELEVANT
     gefunden, impressum = [], set()
     for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
-        url = urljoin(basis, a["href"]).split("#")[0]
+        try:  # Kaputte Links wie http://[borlabs-cookie …] hält Python für IPv6 und wirft ValueError.
+            url = urljoin(basis, a["href"]).split("#")[0]
+            urlsplit(url)
+        except ValueError:
+            continue
         teile = urlsplit(url)
         if teile.scheme in ("http", "https") and teile.netloc == host and url not in gefunden and url != basis:
             if muster.search(teile.path) or muster.search(a.get_text()):
@@ -324,7 +328,11 @@ MAX_KARRIERE_DOMAINS = 2
 def karriere_links(html: str, basis: str, domain: str) -> list[str]:
     gefunden, hosts = [], set()
     for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
-        url = urljoin(basis, a["href"]).split("#")[0]
+        try:  # Kaputte Links wie http://[borlabs-cookie …] hält Python für IPv6 und wirft ValueError.
+            url = urljoin(basis, a["href"]).split("#")[0]
+            urlsplit(url)
+        except ValueError:
+            continue
         if urlsplit(url).scheme in ("http", "https") and _schwester(url, domain) and _host(url) not in hosts:
             gefunden.append(url)
             hosts.add(_host(url))

@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIntValidator, QPainter, QPalette, QPen
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -284,7 +284,14 @@ class FirmenSeite(Seite):
         links = Karte("Firmenliste")
         self.tab = tabelle(["Firma", "Sitz", "Passung", "Score", "Mail"], [None, 125, 115, 55, 80])
         self.tab.setSortingEnabled(True)
+        # Mehrere Firmen auf einmal markieren (Strg/Umschalt) und mit Entf oder Rechtsklick → Entfernen loswerden.
+        self.tab.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tab.itemSelectionChanged.connect(self.zeige_detail)
+        QShortcut(QKeySequence.Delete, self.tab, self.entfernen)
+        self.tab.setContextMenuPolicy(Qt.ActionsContextMenu)
+        aktion = QAction("Entfernen (Entf)", self.tab)
+        aktion.triggered.connect(self.entfernen)
+        self.tab.addAction(aktion)
         links.lage.addWidget(self.tab)
         reihe_liste = QHBoxLayout()
         reihe_liste.addWidget(knopf("Hinzufügen", self.hinzufuegen))
@@ -485,17 +492,28 @@ class FirmenSeite(Seite):
             return self.f.melde(str(fehler))
         self.f.neu_laden()
 
+    def gewaehlte_firmen(self) -> list[int]:
+        zeilen = sorted({i.row() for i in self.tab.selectedItems()})
+        return [self.tab.item(z, 0).data(Qt.UserRole) for z in zeilen if self.tab.item(z, 0)]
+
     def entfernen(self):
-        fid = self.firma_id()
-        if fid is None:
+        ids = self.gewaehlte_firmen()
+        if not ids:
             return self.f.melde("Wähle zuerst eine Firma.")
-        name = self.conn.execute("SELECT name FROM firmen WHERE id = ?", (fid,)).fetchone()[0]
-        if not self.f.frage(f"{name} samt Seiten, Bewertung und Entwürfen aus der Liste entfernen?"):
+        namen = [self.conn.execute("SELECT name FROM firmen WHERE id = ?", (fid,)).fetchone()[0] for fid in ids]
+        frage = (f"{namen[0]} samt Seiten, Bewertung und Entwürfen aus der Liste entfernen?" if len(ids) == 1 else
+                 f"{len(ids)} Firmen samt Seiten, Bewertung und Entwürfen entfernen?\n\n" + "\n".join(namen[:12]) +
+                 ("\n…" if len(namen) > 12 else ""))
+        if not self.f.frage(frage):
             return
-        try:
-            firmen.entferne(self.conn, fid)
-        except ValueError as fehler:
-            return self.f.melde(str(fehler))
+        behalten = []
+        for fid, name in zip(ids, namen):
+            try:
+                firmen.entferne(self.conn, fid)
+            except ValueError:
+                behalten.append(name)
+        if behalten:
+            self.f.melde("An diese Firmen ging schon eine Mail, sie bleiben für die Auswertung erhalten:\n" + "\n".join(behalten))
         self.f.neu_laden()
 
     def alle(self):
@@ -734,6 +752,9 @@ class EntwurfSeite(Seite):
         self.liste.setSelectionMode(QAbstractItemView.SingleSelection)
         self.liste.itemSelectionChanged.connect(self.lade)
         links.lage.addWidget(self.liste)
+        self.loeschen_knopf = knopf("Entwurf löschen", self.loeschen)
+        self.loeschen_knopf.setToolTip("Nimmt die Mail aus der Liste. Sie bleibt im Protokoll, gesendet wird sie nie.")
+        links.lage.addWidget(self.loeschen_knopf)
         lage.addWidget(links, 1)
 
         rechts = Karte("Mail")
@@ -832,6 +853,21 @@ class EntwurfSeite(Seite):
         self.kopie.setEnabled(e["status"] != "entwurf")
         self.senden_knopf.setEnabled(e["status"] == "freigegeben")
         self._zeige_befunde(ki.pruefe_entwurf(self.conn, self.entwurf_id))
+
+    def loeschen(self):
+        if self.entwurf_id is None:
+            return
+        e = self.conn.execute("SELECT f.name FROM entwuerfe e JOIN firmen f ON f.id = e.firma_id WHERE e.id = ?",
+                              (self.entwurf_id,)).fetchone()
+        if not self.f.frage(f"Den Entwurf an {e['name']} löschen?\n\nEr verschwindet aus der Liste und wird nie gesendet. "
+                            "Im Protokoll bleibt vermerkt, dass es ihn gab."):
+            return
+        try:
+            ki.verwirf_entwurf(self.conn, self.entwurf_id)
+        except ki.NichtMoeglich as fehler:
+            return self.f.melde(str(fehler))
+        self.entwurf_id = None
+        self.f.neu_laden()
 
     def varianten(self):
         if self.entwurf_id is None:
@@ -1799,6 +1835,11 @@ class ProfilSeite(Seite):
         self.signatur.setPlaceholderText("Mail-Signatur, z. B. Name, Rolle, Telefon, Web, GitHub. Leer: nur „Viele Grüße“ und dein Name.")
         self.signatur.setFixedHeight(120)
         form.addRow("Signatur", self.signatur)
+        self.gehalt = QLineEdit()
+        self.gehalt.setPlaceholderText("z. B. 65.000 € brutto im Jahr")
+        self.gehalt.setToolTip("Steht nur in einer Mail, wenn die Stellenanzeige ausdrücklich nach der Gehaltsvorstellung "
+                               "fragt, und dann genau als ein fester Satz. Sonst bleibt jede Gehaltsangabe gesperrt.")
+        form.addRow("Gehaltsvorstellung", self.gehalt)
         kontakt.lage.addLayout(form)
         kontakt.lage.addWidget(knopf("Speichern", self.speichern, True))
         links.addWidget(kontakt)
@@ -1850,6 +1891,7 @@ class ProfilSeite(Seite):
             feld.setText(daten[schluessel])
         self.vorlage.setPlainText(db.einstellung(self.conn, "vorlage", ""))
         self.signatur.setPlainText(db.einstellung(self.conn, "mail.signatur", ""))
+        self.gehalt.setText(db.einstellung(self.conn, "mail.gehalt", ""))
         self.woertlich.setChecked(db.einstellung(self.conn, "mail.modus", "ki") == "vorlage")
         self.ohne_alter.blockSignals(True)
         self.ohne_alter.setChecked(ki.ohne_alter(self.conn))
@@ -1868,6 +1910,7 @@ class ProfilSeite(Seite):
         if regeln.ist_sensibel(signatur):
             return self.f.melde(profil.SENSIBEL_MELDUNG)
         db.setze_einstellung(self.conn, "mail.signatur", signatur)
+        db.setze_einstellung(self.conn, "mail.gehalt", self.gehalt.text().strip())
         self.f.neu_laden()
 
     def vorlage_speichern(self):

@@ -265,19 +265,29 @@ def anforderungen_aus_liste(teil: str) -> list[str]:
     """Die Aufzählung direkt unter der Profil-Überschrift, bis zur nächsten Überschrift. Vorteile zählen nie."""
     teil = _ohne_benefits(teil)
     punkte: list[str] = []
+    vorher_punkt = False  # stand direkt darüber ein Listenpunkt, ohne Leerzeile dazwischen?
     for zeile in teil.splitlines()[1:]:
         zeile = zeile.replace("\xa0", " ").strip()
         if not zeile:
+            vorher_punkt = False
             continue
         treffer = AUFZAEHLUNG.match(zeile)
         if not treffer:
+            # „idealerweise ↵ proALPHA“: umbrochene Fortsetzung des letzten Punkts, keine neue Überschrift.
+            if punkte and vorher_punkt and not UEBERSCHRIFT.match(zeile):
+                punkte[-1] = f"{punkte[-1]} {re.sub(r'\s+', ' ', zeile)}"[:300]
+                continue
             if punkte:
                 break
             continue
         punkt = re.sub(r"\s+", " ", treffer.group(1).strip(" *")).strip()
         if punkt:
             punkte.append(punkt[:300])
+            vorher_punkt = True
     return punkte[:MAX_ANFORDERUNGEN]
+
+
+UEBERSCHRIFT = re.compile(r"^(?:#|\*\*|\\\*|__).*|.*:\s*(?:\*\*|\\\*\\\*)?$")
 
 
 def _anforderungen(teil: str, modell: str, chat) -> list[str]:
@@ -549,8 +559,33 @@ def stelle_der_firma(conn: sqlite3.Connection, firma_id: int) -> dict | None:
         return None
     firma = _firma(conn, firma_id)
     treffer = REFERENZ.search(quelle) or REFERENZ.search(firma["quelle"] or "")
+    kennziffer = KENNZIFFER.search(anzeige)
     return {"titel": stellen_cv.stellentitel(conn, firma_id), "referenz": treffer.group(0) if treffer else "",
+            "kennziffer": kennziffer.group(1).rstrip(".,;") if kennziffer else "",
             "anforderungen": _anforderungsteil(anzeige)[:1500], "anzeige": anzeige[:MAX_ANZEIGE_PROMPT]}
+
+
+# „unter Angabe der Kennziffer „ERP-2026““: Die Firma sortiert danach, also gehört sie in den Betreff.
+KENNZIFFER = re.compile(r"(?i)(?:kennziffer|kennzeichen|chiffre|stellen-?id|job-?id|referenznummer|ausschreibungsnummer)"
+                        r"[:\s]*[„\"'»]?([A-Z0-9][A-Za-z0-9./_-]{1,30})")
+# Fragt die Anzeige nach dem Gehalt, darf genau ein fester Satz mit der Angabe aus dem Profil in die Mail. Sonst nie.
+GEHALT_GEFRAGT = re.compile(r"(?i)gehaltsvorstellung|gehaltswunsch|vergütungsvorstellung|einkommensvorstellung|"
+                            r"gehaltsvorstellungen|wunschgehalt|salary expectation")
+
+
+def gehalt_gefragt(conn: sqlite3.Connection, firma_id: int) -> bool:
+    anzeige, _ = anzeige_der_firma(conn, firma_id)
+    return bool(GEHALT_GEFRAGT.search(anzeige))
+
+
+def gehaltszeile(conn: sqlite3.Connection) -> str:
+    wert = db.einstellung(conn, "mail.gehalt", "").strip()
+    return f"Meine Gehaltsvorstellung liegt bei {wert}." if wert else ""
+
+
+def _mit_gehalt(conn: sqlite3.Connection, firma_id: int, kern: str) -> str:
+    zeile = gehaltszeile(conn) if gehalt_gefragt(conn, firma_id) else ""
+    return f"{kern.rstrip()}\n\n{zeile}" if zeile else kern
 
 
 MAX_PUNKTE_MAIL = 10
@@ -623,6 +658,8 @@ def _zuordnungsblock(zuordnung: list[tuple[str, list]]) -> str:
 
 def betreff_fuer_stelle(stelle: dict) -> str:
     titel = stelle["titel"] or "Ihre Stellenanzeige"
+    if stelle.get("kennziffer"):
+        return f"Bewerbung: {titel} (Kennziffer {stelle['kennziffer']})"
     return f"Bewerbung: {titel}" + (f" (Ref. {stelle['referenz']})" if stelle["referenz"] else "")
 
 
@@ -641,6 +678,7 @@ def erstelle_entwurf(conn: sqlite3.Connection, firma_id: int, modell: str, chat=
     pruefe_ausschluss(conn, firma_id)
     pruefe_portal(conn, firma_id)
     kern, betreff, fakt_ids = _schreibe_kern(conn, firma_id, modell, chat)
+    kern = _mit_gehalt(conn, firma_id, kern)
     return _speichere_entwurf(conn, firma, kern, betreff, absender, llm.beschriftung(llm.schreibmodell(modell), ausgewichen), fakt_ids)
 
 
@@ -665,6 +703,7 @@ def entwurf_varianten(conn: sqlite3.Connection, entwurf_id: int, modell: str, ch
     for nummer, (schluessel, (name, stil)) in enumerate(STILE.items(), 1):
         melde(f"Variante {nummer} von {len(STILE)}")
         kern, _, _ = _schreibe_kern(conn, e["firma_id"], modell, chat, stil)
+        kern = _mit_gehalt(conn, e["firma_id"], kern)
         text = setze_zusammen(firma, kern, absender, db.einstellung(conn, "mail.signatur", ""))
         ergebnis.append({"stil": schluessel, "name": name, "text": text, "befunde": pruefe_entwurf(conn, entwurf_id, text=text)})
     return ergebnis
@@ -789,8 +828,19 @@ def pruefe_entwurf(conn: sqlite3.Connection, entwurf_id: int, text: str | None =
     quellen += [str(ich[feld]) for feld in ("name", "email", "telefon", "ort", "links") if ich[feld]]
     quellen.append(db.einstellung(conn, "mail.signatur", ""))  # Signatur aus dem Profil: Telefon, Web, GitHub sind belegt
     andere = [z["name"] for z in conn.execute("SELECT name FROM firmen WHERE id != ?", (e["firma_id"],))]
-    return regeln.pruefe(e["betreff"], e["text"], e["empfaenger"], quellen, andere,
-                         firma["email"].split("@")[-1], regeln.lade_eigene(conn), ohne_alter(conn),
+    # Fragt die Anzeige nach dem Gehalt, ist genau der feste Satz aus dem Profil erlaubt; geprüft wird der Rest.
+    gehalt, zusatz = gehaltszeile(conn), []
+    pruef_text = e["text"]
+    if gehalt_gefragt(conn, e["firma_id"]):
+        if gehalt and gehalt in pruef_text:
+            pruef_text = pruef_text.replace(gehalt, "")
+        else:
+            zusatz.append(regeln.Befund("hinweis", "Die Anzeige bittet um eine Gehaltsvorstellung. " + (
+                "Trag sie unter „Profil“ ein, dann hängt die App einen festen Satz an." if not gehalt else
+                "Der Satz dazu fehlt in der Mail: „" + gehalt + "“")))
+    eigene = [r for r in regeln.lade_eigene(conn) if not (gehalt and gehalt in e["text"] and "gehalt" in (r["meldung"] or "").lower())]
+    return zusatz + regeln.pruefe(e["betreff"], pruef_text, e["empfaenger"], quellen, andere,
+                         firma["email"].split("@")[-1], eigene, ohne_alter(conn),
                          absender_domain=(ich["email"] or "").rpartition("@")[2]) + pruefe_empfaenger(conn, e) + _floskeln(e["text"])
 
 
@@ -903,6 +953,16 @@ def als_neuer_entwurf(conn: sqlite3.Connection, entwurf_id: int) -> int:
     conn.commit()
     db.protokolliere(conn, "Gesendete Mail als neuer Entwurf", f"An {e['firma_email']} statt {e['empfaenger']}", e["firma_id"])
     return cursor.lastrowid
+
+
+def verwirf_entwurf(conn: sqlite3.Connection, entwurf_id: int) -> None:
+    """„Entwurf löschen“: Status verworfen statt DELETE, damit das Protokoll stimmig bleibt. Gesendetes bleibt, wie es ist."""
+    e = conn.execute("SELECT status, firma_id FROM entwuerfe WHERE id = ?", (entwurf_id,)).fetchone()
+    if not e or e["status"] not in ("entwurf", "freigegeben"):
+        raise NichtMoeglich("Gesendete Mails lassen sich nicht löschen, sie stehen unter „Gesendet“.")
+    conn.execute("UPDATE entwuerfe SET status = 'verworfen', freigegeben_am = NULL WHERE id = ?", (entwurf_id,))
+    conn.commit()
+    db.protokolliere(conn, "Entwurf gelöscht", f"Entwurf {entwurf_id}", e["firma_id"])
 
 
 def setze_status(conn: sqlite3.Connection, entwurf_id: int, status: str) -> None:
