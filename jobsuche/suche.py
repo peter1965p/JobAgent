@@ -9,7 +9,8 @@ import html
 import json
 import re
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as ZeitUeberschritten
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -315,7 +316,11 @@ def _sitz_der_website(website: str, land: str, client: httpx.Client) -> tuple[st
     return "", "", kurz, konzern
 
 
-def _sitze(conn: sqlite3.Connection, treffer: list[dict], land: str, client: httpx.Client) -> dict[str, tuple[str, str, str, str] | None]:
+MAX_SEKUNDEN_SITZE = 240  # Für alle Websites zusammen. Was dann noch hängt, zählt als „nicht lesbar“.
+
+
+def _sitze(conn: sqlite3.Connection, treffer: list[dict], land: str, client: httpx.Client,
+           melde=lambda _: None) -> dict[str, tuple[str, str, str, str] | None]:
     """Sitz je Website, gemerkte Antworten zuerst. Jede Suche soll dieselben kleinen Firmen nicht erneut abrufen."""
     sitze, offen = {}, []
     for t in treffer:
@@ -325,9 +330,22 @@ def _sitze(conn: sqlite3.Connection, treffer: list[dict], land: str, client: htt
             sitze[t["website"]] = (gemerkt["plz"], gemerkt["ort"], gemerkt["kurz"], gemerkt["konzern"])
         else:
             offen.append(t["website"])
-    with ThreadPoolExecutor(GLEICHZEITIGE_SEITEN) as pool:
-        gelesen = list(pool.map(lambda w: _sitz_der_website(w, land, client), offen))
-    for website, sitz in zip(offen, gelesen):
+    gelesen: dict[str, tuple | None] = {}
+    pool = ThreadPoolExecutor(GLEICHZEITIGE_SEITEN)
+    auftraege = {pool.submit(_sitz_der_website, w, land, client): w for w in offen}
+    try:
+        for fertig in as_completed(auftraege, timeout=MAX_SEKUNDEN_SITZE):
+            try:
+                gelesen[auftraege[fertig]] = fertig.result()
+            except Exception:  # Eine kaputte Seite darf die Suche nicht abbrechen.
+                gelesen[auftraege[fertig]] = None
+            melde(f"Prüfe den Firmensitz: {len(gelesen)} von {len(offen)} Websites gelesen")
+    except ZeitUeberschritten:
+        melde(f"Firmensitz: {len(offen) - len(gelesen)} Websites antworten nicht, ich lasse sie weg")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)  # Hängende Abrufe laufen im Hintergrund aus, die Suche geht weiter.
+    for website in offen:
+        sitz = gelesen.get(website)
         sitze[website] = sitz
         if sitz:
             db.setze_einstellung(conn, f"cache.sitz.{land}.{firmen._host(website)}",
@@ -352,7 +370,7 @@ def nur_im_gebiet(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftra
     gebiet = quellen.finde_gebiet(auftrag.ort, auftrag.land, client)
     melde(f"Prüfe den Firmensitz von {len(treffer)} Internet-Treffern")
     netz = client or httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": config.USER_AGENT})
-    sitze = _sitze(conn, treffer, auftrag.land, netz)
+    sitze = _sitze(conn, treffer, auftrag.land, netz, melde)
     bleiben, zu_weit, unklar = [], 0, 0
     for t in treffer:
         plz, ort, kurz, konzern = sitze[t["website"]] or ("", "", "", "")

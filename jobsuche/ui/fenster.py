@@ -2618,7 +2618,24 @@ class Sitzung:
         self.app.quit()
 
 
+def _stapel_bei_signal():
+    """`kill -USR1 <pid>` schreibt die Aufrufstapel aller Threads nach ~/.cache/jobagent/stapel.log.
+    So lässt sich ein Hänger ohne Root-Rechte untersuchen."""
+    import faulthandler
+    import signal
+    from pathlib import Path as _P
+    try:
+        ordner = _P.home() / ".cache" / "jobagent"
+        ordner.mkdir(parents=True, exist_ok=True)
+        datei = open(ordner / "stapel.log", "a", buffering=1)
+        faulthandler.register(signal.SIGUSR1, file=datei, all_threads=True)
+        return datei
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
 def main() -> int:
+    _stapel = _stapel_bei_signal()  # noqa: F841 – die Datei muss offen bleiben
     app = QApplication(sys.argv)
     app.setApplicationName("Job Agent")
     app.setQuitOnLastWindowClosed(False)  # Zwischen Splash, Einrichtung und Anmeldung ist kurz kein Fenster offen.

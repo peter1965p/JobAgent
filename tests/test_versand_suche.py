@@ -7,6 +7,8 @@ from email import policy
 import json
 import re
 
+import time
+
 import httpx
 import pytest
 
@@ -1824,3 +1826,49 @@ def test_bewerbersystem_nur_mit_eigener_stellenseite():
     assert firmen._schwester("https://beispiel.jobs.personio.de/", "beispiel-bau.de")
     assert not firmen._schwester("https://softgarden.io/", "beispiel-bau.de")
     assert not firmen._schwester("https://www.personio.de/", "beispiel-bau.de")
+
+
+def test_firmensitz_haengende_website_haelt_die_suche_nicht_auf(conn, monkeypatch):
+    import threading
+    halt = threading.Event()
+
+    def sitz(website, land, client):
+        if "haengt" in website:
+            halt.wait(5)
+            return None
+        return ("28195", "Bremen", "kurz", "")
+    monkeypatch.setattr(suche, "_sitz_der_website", sitz)
+    monkeypatch.setattr(suche, "MAX_SEKUNDEN_SITZE", 0.3)
+    meldungen = []
+    beginn = time.monotonic()
+    sitze = suche._sitze(conn, [{"website": "https://gut.de"}, {"website": "https://haengt.de"}], "de", None, meldungen.append)
+    halt.set()
+    assert time.monotonic() - beginn < 2
+    assert sitze["https://gut.de"][0] == "28195" and sitze["https://haengt.de"] is None
+    assert any("antworten nicht" in m for m in meldungen)
+
+
+def test_seite_die_nur_tropfenweise_kommt_wird_abgebrochen(monkeypatch):
+    uhr = iter(range(0, 1000, 15))
+    monkeypatch.setattr(firmen.time, "monotonic", lambda: next(uhr))
+
+    def handler(anfrage):
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=iter([b"<html>"] * 5))
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.HTTPError):
+        firmen._hole(client, "https://langsam.de/")
+
+
+def test_viele_unbrauchbare_links_werden_nicht_endlos_probiert(monkeypatch):
+    monkeypatch.setattr(firmen, "SEITEN_PAUSE", 0)
+    links = "".join(f'<a href="/kontakt-{i}">Kontakt {i}</a>' for i in range(200))
+    abrufe = []
+
+    def handler(anfrage):
+        abrufe.append(anfrage.url.path)
+        if anfrage.url.path == "/":
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=f"<html><body>{links}</body></html>")
+        return httpx.Response(404)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firmen.hole_seiten("https://shop.de/", client, 2)
+    assert sum(p.startswith("/kontakt-") for p in abrufe) <= firmen.MAX_VERSUCHE

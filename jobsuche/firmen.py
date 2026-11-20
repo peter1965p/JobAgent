@@ -14,6 +14,12 @@ from . import config, db, rag
 MAX_SEITEN = 6
 SEITEN_PAUSE = 0.5  # Kleine Firmen hosten oft schwach: Der Abruf soll niemandem zur Last fallen.
 MAX_BYTES = 3_000_000  # Baukasten-Seiten sind oft über 1 MB, Footer mit Adresse und Karriere-Link stehen am Ende.
+# Der Timeout des Clients gilt je Lesevorgang. Ein Server, der alle paar Sekunden ein Byte schickt, hielte den Abruf
+# sonst ewig offen. Darum zusätzlich eine Obergrenze für die ganze Seite.
+MAX_SEKUNDEN_JE_SEITE = 20
+# Liefert ein Link nichts Brauchbares (PDF, 404, fremder Host), geht es zum nächsten. Seiten mit Hunderten passender
+# Links liefen so mit je einer halben Sekunde Pause fast endlos. Darum höchstens so viele Versuche je Durchgang.
+MAX_VERSUCHE = 6
 IMPRESSUM = re.compile(r"impressum|imprint|legal|rechtlich|anbieterkennzeichnung", re.I)
 # Manche Seiten bauen ihre Navigation erst per JavaScript auf, das Impressum ist aber trotzdem da.
 IMPRESSUM_PFADE = ("/impressum", "/impressum/", "/de/impressum", "/imprint", "/legal-notice", "/impressum.html")
@@ -331,10 +337,13 @@ def _hole(client: httpx.Client, url: str) -> tuple[str, str] | None:
         if antwort.status_code != 200 or "html" not in antwort.headers.get("content-type", ""):
             return None
         rohdaten = bytearray()
+        ende = time.monotonic() + MAX_SEKUNDEN_JE_SEITE
         for stueck in antwort.iter_bytes():
             rohdaten += stueck
             if len(rohdaten) > MAX_BYTES:
                 break
+            if time.monotonic() > ende:
+                raise httpx.ReadTimeout(f"{url} lieferte nach {MAX_SEKUNDEN_JE_SEITE} s noch keine ganze Seite.")
         return str(antwort.url), bytes(rohdaten).decode(antwort.encoding or "utf-8", errors="replace")
 
 
@@ -378,11 +387,13 @@ def hole_seiten(website: str, client: httpx.Client, max_seiten: int = MAX_SEITEN
     basis = start[0]
     robots = _robots(client, basis)
     seiten = {basis: start[1]}
+    versuche = 0
     for url in _links(start[1], basis):
-        if len(seiten) >= max_seiten:
+        if len(seiten) >= max_seiten or versuche >= MAX_VERSUCHE:
             break
         if url in seiten or not robots.can_fetch(config.USER_AGENT, url):
             continue
+        versuche += 1
         time.sleep(SEITEN_PAUSE)
         try:
             treffer = _hole(client, url)
@@ -410,11 +421,13 @@ def hole_seiten(website: str, client: httpx.Client, max_seiten: int = MAX_SEITEN
         if not (_schwester(url, domain) or KARRIERE_SEITE.search(urlsplit(url).path)):
             continue
         regeln_ = robots if urlsplit(url).netloc == urlsplit(basis).netloc else _robots(client, urljoin(url, "/"))
+        versuche = 0
         for unter in _links(html, url, STELLEN_LINK if _schwester(url, domain) else KARRIERE_SEITE):
-            if len(seiten) >= max_seiten + MAX_STELLENSEITEN:
+            if len(seiten) >= max_seiten + MAX_STELLENSEITEN or versuche >= MAX_VERSUCHE + MAX_STELLENSEITEN:
                 break
             if unter in seiten or not regeln_.can_fetch(config.USER_AGENT, unter):
                 continue
+            versuche += 1
             time.sleep(SEITEN_PAUSE)
             try:
                 treffer = _hole(client, unter)
