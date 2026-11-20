@@ -470,3 +470,12 @@ def test_links_auf_die_eigene_absenderdomain_sind_belegt():
     assert adressen == ["Adresse ohne Beleg im Text: www.erfunden.de"]
     ohne = regeln.pruefe("b", text, "a@firma.de", ["github.com/ich"], [], "firma.de")
     assert any("ich-it.de/termine" in b.text for b in ohne)  # ohne Absenderdomain bleibt es gesperrt
+
+
+def test_wortzahl_ohne_gruss_und_signatur():
+    from jobsuche import regeln
+    rumpf = "Wort " * 170
+    signatur = "\n\nViele Grüße\nPeter\n\n" + "Signaturzeile mit vielen Wörtern drin " * 10
+    befunde = regeln.pruefe("b", rumpf + signatur, "a@x.de", [], [])
+    assert not any("Wörtern" in b.text for b in befunde)
+    assert any("190 Wörtern" in b.text for b in regeln.pruefe("b", "Wort " * 190 + signatur, "a@x.de", [], []))

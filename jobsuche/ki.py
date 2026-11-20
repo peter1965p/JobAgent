@@ -699,13 +699,14 @@ def _schreibe_kern(conn: sqlite3.Connection, firma_id: int, modell: str, chat, s
                   "genau das schon tut, ohne die Anzeige nachzuplappern. Danach je Übereinstimmung ein bis zwei Sätze: was "
                   "er gemacht hat und was dabei herauskam, in eigenen Worten statt als Faktenliste. Legt die Anzeige Wert auf "
                   "Nähe oder Wohnort und gibt es dazu einen Fakt, gehört er hinein. Zum Schluss, dass Lebenslauf und "
-                  "Arbeitszeugnis anbei sind, und die Bitte um ein kurzes Gespräch von 15 Minuten. ")
+                  "Arbeitszeugnis anbei sind, und die Bitte um ein Gespräch in eigenen Worten, ohne Minutenangabe und ohne "
+                  "Standardsatz. Duzt die Anzeige ihre Leser, duzt auch die Mail. ")
     else:
         art = (f"Du schreibst eine kurze Initiativbewerbung per Mail auf Deutsch, in der Ich-Form von {absender}, höchstens "
                "130 Wörter, knapp und sachlich. ")
         aufbau = ("Aufbau: Ein Satz, warum genau diese Firma, mit etwas Konkretem aus <firmendaten>. Dann zwei bis drei "
                   "Sätze, welche Fakten aus <fakten> dazu passen. Dann, was der Absender sucht. Zum Schluss die Bitte um "
-                  "ein kurzes Gespräch von 15 Minuten. Der Betreff nennt in wenigen Wörtern, worum sich der Absender "
+                  "ein Gespräch in eigenen Worten, ohne Minutenangabe. Der Betreff nennt in wenigen Wörtern, worum sich der Absender "
                   "bewirbt, und enthält das Wort Initiativbewerbung. ")
     system = (
         art + "Der Absender sucht eine Stelle und verkauft nichts: Kein Angebot, keine Dienstleistung. Ohne Anrede und "
@@ -782,7 +783,7 @@ def pruefe_entwurf(conn: sqlite3.Connection, entwurf_id: int, text: str | None =
     quellen.append(firma["warum"])
     quellen.append(firma["quelle"] or "")  # Referenznummer der Anzeige im Betreff
     quellen.append(db.einstellung(conn, "vorlage", ""))
-    quellen.append("15 Minuten")  # Steht fest im Prompt.
+    quellen.append("15 Minuten")  # Stand früher fest im Prompt, ältere Entwürfe enthalten es noch.
     # Eigene Kontaktdaten aus dem Profil, etwa Telefon und Mail in der Signatur, sind belegt.
     ich = person.lade(conn)
     quellen += [str(ich[feld]) for feld in ("name", "email", "telefon", "ort", "links") if ich[feld]]

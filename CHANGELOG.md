@@ -2,6 +2,14 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.2.1 – 2026-11-20
+
+### Geändert
+- Die Mail endet nicht mehr fest mit „15 Minuten“. Die KI formuliert die Bitte um ein Gespräch selbst und duzt, wenn die Anzeige duzt.
+
+### Behoben
+- Der Hinweis „lang für eine Erstmail“ zählte Gruß und Signatur mit. Jetzt zählt nur der Text bis zum Gruß.
+
 ## 0.2.0 – 2026-11-20
 
 ### Neu

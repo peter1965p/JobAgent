@@ -150,9 +150,12 @@ def pruefe(betreff: str, text: str, empfaenger: str, erlaubte_quellen: list[str]
                                          "jüngsten Stationen nach vorn."))
     if re.search(r"\b(Herr|Frau)\s+[A-ZÄÖÜ]", text):
         befunde.append(Befund("hinweis", "Anrede mit Herr/Frau: Bitte selbst prüfen, ob sie stimmt."))
-    woerter = len(text.split())
+    # Gezählt wird nur der Text bis zum Gruß: Signatur mit Telefon, Web und GitHub macht eine Mail nicht länger zu lesen.
+    rumpf = re.split(r"\n\s*(?:viele|beste|freundliche|liebe|herzliche)\s+grüße|\n\s*mit\s+freundlichen\s+grüßen|\n\s*gruß\b",
+                     text, maxsplit=1, flags=re.I)[0]
+    woerter = len(rumpf.split())
     if woerter > 180:
-        befunde.append(Befund("hinweis", f"Mit {woerter} Wörtern lang für eine Erstmail."))
+        befunde.append(Befund("hinweis", f"Mit {woerter} Wörtern (ohne Gruß und Signatur) lang für eine Erstmail."))
     return befunde
 
 
