@@ -352,6 +352,9 @@ def test_suche_seite_zeigt_treffer_und_uebernimmt(app, f, monkeypatch):
     stelle = {"referenz": "R1", "firma": "NewTec GmbH", "titel": "KI-Entwickler", "beruf": "x", "ort": "Bremen",
               "entfernung": 9, "url": "https://example.org/R1"}
     monkeypatch.setattr(suche, "suche", lambda was, wo, km, client=None, arbeitszeit="": [stelle])
+    # Ohne Netz: Übernehmen lädt sonst die Anzeige und die Stellenseite und hängt an der Leitung.
+    monkeypatch.setattr(suche, "anzeigentext", lambda stelle, client=None: "")
+    monkeypatch.setattr(suche, "speichere_stellenseite", lambda *a, **k: None)
     f.zeige_seite(fenster.SucheSeite)
     s = f.stapel.currentWidget()
     s.was.setText("KI")
