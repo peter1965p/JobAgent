@@ -1285,6 +1285,10 @@ class SucheSeite(Seite):
         self.q_jooble = Schalter("Jooble")
         for feld in (self.q_postfach, self.q_portale, self.q_adzuna, self.q_jooble):
             reihe_stellen.addWidget(feld)
+        self.nur_ki = Schalter("KI erwünscht")
+        self.nur_ki.setToolTip("Liest jede Anzeige und zeigt nur Stellen, die KI-Arbeit ausdrücklich nennen: Claude, Copilot, "
+                               "Cursor, LLM, RAG, Agenten, generative KI, KI-gestützte Entwicklung …")
+        reihe_stellen.addWidget(self.nur_ki)
         self.stichwoerter = QLineEdit()
         self.stichwoerter.setToolTip("Nur Stellen, deren Titel eines dieser Wörter enthält. Gilt für Alerts, Portale, Adzuna und Jooble.")
         reihe_stellen.addWidget(self.stichwoerter, 1)
@@ -1310,7 +1314,7 @@ class SucheSeite(Seite):
         ergebnis.lage.addWidget(self.hinweis)
         self.ausfaelle = label("", "hinweis", True)
         ergebnis.lage.addWidget(self.ausfaelle)
-        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status"], [50, 165, None, 95, 52, 80, 60])
+        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI"], [50, 165, None, 95, 52, 80, 60, 110])
         self.tab.horizontalHeaderItem(4).setToolTip("Fahrstrecke mit dem Auto. ≈ heißt Luftlinie, wenn keine Route bekannt ist.")
         self.tab.setSortingEnabled(True)
         self.tab.itemSelectionChanged.connect(self.zeige_details)
@@ -1405,6 +1409,7 @@ class SucheSeite(Seite):
             for name, feld in self._stellenquellen():
                 feld.setChecked(name in gewaehlt)
             self.stichwoerter.setText(lies("stichwoerter"))
+            self.nur_ki.setChecked(lies("nur_ki") == "1")
             self._internet_moeglich()
         if not self.ausschluss.hasFocus():
             self.ausschluss.setText(db.einstellung(self.conn, "suche.ausschluss", ""))
@@ -1419,7 +1424,8 @@ class SucheSeite(Seite):
             t["bekannt"] = regeln.kurzname(t["firma"]).lower() in bekannt
             zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"], t["ort"],
                            km_text(t), t.get("quelle", ""),
-                           "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else ""))
+                           "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
+                           ", ".join(t.get("ki") or [])))
         fuelle(self.tab, zeilen, list(self.treffer))
 
     def _stellenquellen(self):
@@ -1450,11 +1456,12 @@ class SucheSeite(Seite):
                                                  ("jobboerse", self.q_jobboerse), ("arbeitnow", self.q_arbeitnow),
                                                  *self._stellenquellen()) if feld.isChecked())
         auftrag = suche.Auftrag(self.was.text(), self.wo.text().strip(), self.land.currentData(), self.umkreis.currentData(),
-                                self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData())
+                                self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData(),
+                                self.nur_ki.isChecked())
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
                            ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche),
                            ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit),
-                           ("bundesland", self.gebiet.currentData() or "")):
+                           ("bundesland", self.gebiet.currentData() or ""), ("nur_ki", "1" if auftrag.nur_ki else "0")):
             db.setze_einstellung(self.conn, f"suche.{name}", wert)
         return auftrag
 
@@ -1582,6 +1589,8 @@ class SucheSeite(Seite):
         if ort:
             teile.append(e(ort))
         teile.append(f"Quelle: {e(t.get('quelle', ''))}")
+        if t.get("ki"):
+            teile.append(f"<b>KI in der Anzeige:</b> {e(', '.join(t['ki']))}")
         konzern = (v or {}).get("konzern") or t.get("konzern", "")
         if konzern:
             teile.append(f"<b>Eher Konzern:</b> {e(konzern)}")
@@ -1593,6 +1602,8 @@ class SucheSeite(Seite):
             else:
                 art = "Impressum öffnen" if firmen.IMPRESSUM.search(t["url"]) else "Fundstelle öffnen"
             links.append(link(t["url"], art))
+        if t.get("start") and isinstance(t.get("lat"), (int, float)) and isinstance(t.get("lon"), (int, float)):
+            links.append(link(suche.routen_link(t["start"], (t["lat"], t["lon"])), "Route anzeigen"))
         website = (v or {}).get("website") or t.get("website", "")
         if website.startswith(("http://", "https://")):
             links.append(link(website, "Website der Firma"))

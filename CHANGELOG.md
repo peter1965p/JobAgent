@@ -2,6 +2,13 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.3.0 – 2026-11-20
+
+### Neu
+- **Schalter „KI erwünscht“** in der Suche: Die App liest jede Anzeige und behält nur Stellen, die KI-Arbeit ausdrücklich nennen (Claude, Cursor, Copilot, ChatGPT/OpenAI, Codex, Gemini, LLM, RAG, Prompting, Agenten, generative KI, KI-gestützte Entwicklung, n8n/LangChain, MCP). Gelesene Anzeigen werden gemerkt.
+- Neue Spalte **„KI“** in den Treffern und „KI in der Anzeige: …“ in den Details.
+- **„Route anzeigen“** in den Details: Autoroute vom Startpunkt zur Firma auf OpenStreetMap, im Browser.
+
 ## 0.2.3 – 2026-11-20
 
 ### Geändert

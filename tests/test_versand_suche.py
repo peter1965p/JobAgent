@@ -2087,3 +2087,27 @@ def test_umbrochener_listenpunkt_und_kaputter_ipv6_link():
         "Kenntnisse in ERP-Systemen, idealerweise proALPHA", "Gute SQL-Kenntnisse"]
     html = ('<a href="http://[borlabs-cookie%20type=btn/%5D">x</a><a href="/impressum">Impressum</a>')
     assert firmen._links(html, "https://www.contech.de/") == ["https://www.contech.de/impressum"]
+
+
+def test_ki_erwuenscht_liest_anzeigen_und_filtert(conn, monkeypatch):
+    assert suche.ki_signale("Erfahrung mit Claude Code, Cursor oder GitHub Copilot sowie RAG") == ["Claude", "Cursor", "Copilot", "RAG"]
+    assert suche.ki_signale("Cursorpositionen im Lager verwalten") == []
+    texte = {"R1": "Wir entwickeln agentisch mit Claude Code und LLMs.", "R2": "Windows-Clients betreuen."}
+    abrufe = []
+    monkeypatch.setattr(suche, "anzeigentext", lambda t, client=None: abrufe.append(t["referenz"]) or texte.get(t["referenz"], ""))
+    monkeypatch.setattr(suche, "suche", lambda *a, **k: [{"referenz": "R1", "firma": "KI GmbH", "titel": "Entwickler", "ort": "", "quelle": "x"},
+                                                       {"referenz": "R2", "firma": "Alt GmbH", "titel": "Admin", "ort": "", "quelle": "x"}])
+    monkeypatch.setattr(suche, "_vereine", lambda listen: [dict(t) for l in listen for t in l])
+    monkeypatch.setattr(suche, "bewerte_naehe", lambda conn, t: t)
+    auftrag = suche.Auftrag("Entwickler", "", "de", 50, "", ("jobboerse",), "", "", True)
+    ergebnis = suche.suche_ueberall(conn, auftrag)
+    assert [t["firma"] for t in ergebnis["treffer"]] == ["KI GmbH"] and ergebnis["treffer"][0]["ki"] == ["Claude", "LLM", "Agenten"]
+    assert any("KI erwünscht: 1 von 2" in h for h in ergebnis["hinweise"])
+    suche.suche_ueberall(conn, auftrag)
+    assert abrufe.count("R1") == 1  # gemerkt, kein zweiter Abruf
+
+
+def test_routen_link_fuer_das_navi():
+    url = suche.routen_link((53.08, 8.8), (52.83, 8.39))
+    assert url == ("https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route="
+                   "53.08000%2C8.80000%3B52.83000%2C8.39000")

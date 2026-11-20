@@ -265,6 +265,7 @@ class Auftrag:
     quellen: tuple[str, ...] = ("verzeichnis", "jobboerse", "arbeitnow")
     searxng: str = ""
     arbeitszeit: str = ""
+    nur_ki: bool = False  # nur Stellen, deren Anzeige KI-Arbeit ausdrücklich nennt
 
 
 def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
@@ -272,7 +273,7 @@ def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
     lies = lambda name, vorgabe="": db.einstellung(conn, f"suche.{name}", vorgabe)
     gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q)
     return Auftrag(lies("begriffe"), lies("ort") or suchort(conn), lies("land", "de"), int(lies("umkreis", "50")),
-                   lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"))
+                   lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"), lies("nur_ki") == "1")
 
 
 def _gleich(treffer: dict) -> str:
@@ -484,6 +485,10 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         if len(treffer) < vorher:
             hinweise.append(f"Ausgeschlossen: {vorher - len(treffer)} Treffer mit {', '.join(woerter)}.")
     treffer = mit_fahrstrecke(conn, treffer, auftrag, hinweise, melde, client)
+    if auftrag.nur_ki:
+        vorher = len(treffer)
+        treffer = [t for t in mit_ki_signalen(conn, treffer, melde, client) if t.get("ki")]
+        hinweise.append(f"KI erwünscht: {len(treffer)} von {vorher} Anzeigen nennen KI-Werkzeuge oder KI-Arbeit.")
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
     return {"treffer": bewerte_naehe(conn, treffer), "hinweise": hinweise, "branche": branche}
 
@@ -499,6 +504,62 @@ def gemerktes_gebiet(conn: sqlite3.Connection, ort: str, land: str, client=None)
     gebiet = quellen.finde_gebiet(ort, land, client)
     db.setze_einstellung(conn, schluessel, json.dumps(gebiet.__dict__))
     return gebiet
+
+
+# Woran man eine Stelle erkennt, in der KI-Arbeit erwünscht ist: Werkzeuge, Verfahren, Arbeitsweise. Anzeige → Anzeigename.
+KI_SIGNALE = {
+    "Claude": r"\bclaude\b", "Cursor": r"\bcursor\b(?![- ]?(?:position|tasten))", "Copilot": r"\bcopilot\b",
+    "ChatGPT/OpenAI": r"\bchatgpt\b|\bopenai\b|\bgpt-?\d", "Codex": r"\bcodex\b", "Gemini": r"\bgemini\b",
+    "LLM": r"\bllms?\b|large language model|sprachmodell", "RAG": r"\brag\b|retrieval[- ]augmented",
+    "Prompting": r"prompt[- ]?engineering|\bprompts?\b", "Agenten": r"\bagentisch|\bagentic|ki[- ]agent|ai[- ]agent|multi[- ]agent",
+    "Generative KI": r"generative[nrs]? (?:ki|ai)|\bgenai\b|gen[- ]ai\b",
+    "KI-gestützt": r"ki[- ]gestützt|ai[- ]gestützt|ai[- ]assisted|ki[- ]unterstützt|mit ki[- ]werkzeugen",
+    "n8n/LangChain": r"\bn8n\b|langchain|langgraph|llamaindex|crewai|autogen", "MCP": r"\bmcp\b|model context protocol",
+}
+_KI = {name: re.compile(muster, re.I) for name, muster in KI_SIGNALE.items()}
+KI_CHECK_SEKUNDEN = 120
+
+
+def ki_signale(text: str) -> list[str]:
+    return [name for name, muster in _KI.items() if muster.search(text or "")]
+
+
+def mit_ki_signalen(conn: sqlite3.Connection, treffer: list[dict], melde=lambda _: None, client=None) -> list[dict]:
+    """Liest je Treffer den Anzeigentext und merkt, welche KI-Signale darin stehen (t["ki"]). Jobbörsen-Anzeigen werden
+    einmal geladen und das Ergebnis gemerkt; Portale und Alerts zählen mit Titel und Schnipsel."""
+    from concurrent.futures import ThreadPoolExecutor
+    offen = []
+    for t in treffer:
+        gemerkt = db.einstellung(conn, f"cache.ki.{t.get('referenz', '')}", "")
+        if gemerkt:
+            t["ki"] = json.loads(gemerkt)
+        else:
+            offen.append(t)
+    netz = client or httpx.Client(timeout=20, headers={"User-Agent": config.USER_AGENT})
+
+    def lies(t):
+        return " ".join(str(t.get(f, "")) for f in ("titel", "beruf", "beschreibung", "schnipsel")) + " " + anzeigentext(t, netz)
+    pool = ThreadPoolExecutor(4)
+    auftraege = {pool.submit(lies, t): t for t in offen}
+    fertig_zahl = 0
+    try:
+        for fertig in as_completed(auftraege, timeout=KI_CHECK_SEKUNDEN):
+            t = auftraege[fertig]
+            fertig_zahl += 1
+            melde(f"KI-Check: {fertig_zahl} von {len(offen)} Anzeigen gelesen")
+            try:
+                t["ki"] = ki_signale(fertig.result())
+            except Exception:
+                t["ki"] = ki_signale(t.get("titel", ""))
+                continue
+            if t.get("referenz"):
+                db.setze_einstellung(conn, f"cache.ki.{t['referenz']}", json.dumps(t["ki"]))
+    except ZeitUeberschritten:
+        for t in offen:
+            t.setdefault("ki", ki_signale(t.get("titel", "")))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return treffer
 
 
 def _startpunkt(conn: sqlite3.Connection, auftrag: Auftrag, client) -> tuple[tuple[float, float] | None, "quellen.Gebiet | None"]:
@@ -564,6 +625,12 @@ def _passenden_standort_waehlen(treffer: list[dict], auftrag: Auftrag, gebiet, s
         t["lat"], t["lon"] = wahl[1], wahl[2]
 
 
+def routen_link(start: tuple[float, float], ziel: tuple[float, float]) -> str:
+    """Autoroute auf OpenStreetMap, öffnet im Browser. Wie ein Navi, nur ohne App."""
+    return ("https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route="
+            f"{start[0]:.5f}%2C{start[1]:.5f}%3B{ziel[0]:.5f}%2C{ziel[1]:.5f}")
+
+
 def mit_fahrstrecke(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftrag, hinweise: list[str],
                     melde=lambda _: None, client=None) -> list[dict]:
     """Ersetzt die Luftlinie durch die Fahrstrecke mit dem Auto und sortiert beim Umkreis aus, was auf der Straße zu weit ist.
@@ -587,6 +654,8 @@ def mit_fahrstrecke(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auft
             hinweise.append(f"Gebiet: {len(draussen)} Treffer außerhalb von {auftrag.ort} aussortiert.")
     if not start or not mit_ort:
         return treffer
+    for t in mit_ort:
+        t["start"] = start  # für „Route anzeigen“ in den Details
     offen, schluessel = [], {}
     for t in mit_ort:
         k = f"cache.strecke.{start[0]:.3f},{start[1]:.3f}.{t['lat']:.3f},{t['lon']:.3f}"
