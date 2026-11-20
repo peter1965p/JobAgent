@@ -664,3 +664,37 @@ def test_entwurf_empfaenger_aenderbar_und_geprueft(app, f, monkeypatch):
     assert (e["empfaenger"], e["status"]) == ("personal@x.de", "entwurf")
     seite._bestaetige("✓ Entwurf gespeichert.")
     assert seite.gespeichert.isVisibleTo(seite) and "gespeichert" in seite.gespeichert.text()
+
+
+def test_mail_vorschlagen_liest_erst_die_anzeige_und_fragt_unsicheres_nach(app, f, monkeypatch):
+    from jobsuche import ki, suche
+    fid = f.conn.execute("INSERT INTO firmen (name, email) VALUES ('X GmbH', 'a@x.de')").lastrowid
+    f.conn.commit()
+    eignung = {"score": 50, "erfuellt": ["Linux"], "teilweise": [], "fehlt": ["PHP"], "selbst": [], "cv": [], "nachweise": [],
+               "anzeige": "", "modell": "m", "zeit": ""}
+    monkeypatch.setattr(suche, "pruefe_eignung", lambda conn, firma_id, modell, melde=None: eignung)
+    geschrieben = []
+    monkeypatch.setattr(suche, "schlage_mail_vor", lambda conn, firma_id, *a, **k: geschrieben.append(firma_id) or 1)
+    gefragt, fragen = [], []
+    f.nachfragen = lambda punkte: gefragt.append(punkte) or {}
+    f.frage = lambda text: fragen.append(text) or False
+    f.zeige_seite(fenster.FirmenSeite)
+    seite = f.stapel.currentWidget()
+    seite.firma_id = lambda: fid
+    seite.entwurf()
+    warte(app, f)
+    assert gefragt == [["PHP"]] and "Fehlt oder nicht belegt" in fragen[0] and geschrieben == []  # „Nein“ schreibt nichts
+    f.frage = lambda text: True
+    seite.entwurf()
+    warte(app, f)
+    warte(app, f)
+    assert geschrieben == [fid]
+
+    def ohne_anzeige(conn, firma_id, modell, melde=None):
+        raise ki.NichtMoeglich("keine Anzeige")
+    monkeypatch.setattr(suche, "pruefe_eignung", ohne_anzeige)
+    gefragt.clear()
+    seite.entwurf()
+    warte(app, f)
+    warte(app, f)
+    assert geschrieben == [fid, fid] and gefragt == []  # Initiativanfrage: nichts zu prüfen, direkt schreiben

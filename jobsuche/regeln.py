@@ -97,9 +97,24 @@ def fuer_prompt(eigene: list[dict]) -> str:
     return " ".join(_meldung(r) for r in eigene)
 
 
+def _ohne_www(adresse: str) -> str:
+    return adresse.removeprefix("www.")
+
+
+def adresse_belegt(adresse: str, belegte: set[str], domains: set[str]) -> bool:
+    """Belegt ist eine Adresse, die in den Quellen steht oder darunter liegt (github.com/ich deckt github.com/ich/repo),
+    oder jede Seite unter einer Domain aus `domains`: der Firma und deiner eigenen Absenderdomain. „www.“ zählt nicht."""
+    a = _ohne_www(adresse)
+    host = a.split("/")[0]
+    if any(host == d or host.endswith("." + d) for d in domains):
+        return True
+    return any(a == e or a.startswith(e + "/") or (("/" not in e) and host.endswith("." + e)) for e in map(_ohne_www, belegte))
+
+
 def pruefe(betreff: str, text: str, empfaenger: str, erlaubte_quellen: list[str], andere_firmen: list[str],
-           eigene_domain: str = "", eigene: list[dict] = (), ohne_alter: bool = False) -> list[Befund]:
-    """`erlaubte_quellen`: bestätigte Fakten, Firmentexte und die Stilvorlage."""
+           eigene_domain: str = "", eigene: list[dict] = (), ohne_alter: bool = False, absender_domain: str = "") -> list[Befund]:
+    """`erlaubte_quellen`: bestätigte Fakten, Firmentexte und die Stilvorlage. `eigene_domain` ist die der Firma,
+    `absender_domain` die deiner Mailadresse: Links auf deine eigene Website sind damit belegt."""
     befunde: list[Befund] = []
     gesamt = f"{betreff}\n{text}"
 
@@ -119,9 +134,8 @@ def pruefe(betreff: str, text: str, empfaenger: str, erlaubte_quellen: list[str]
     if fehlend:
         befunde.append(Befund("sperre", "Zahl ohne Beleg in den Fakten: " + ", ".join(fehlend)))
 
-    erlaubte_adressen = adressen(belegt) | ({eigene_domain.lower()} if eigene_domain else set())
-    fremd = sorted(a for a in adressen(gesamt)
-                   if not any(a == e or a.endswith("." + e) or a.startswith(e + "/") for e in erlaubte_adressen))
+    domains = {_ohne_www(d.lower()) for d in (eigene_domain, absender_domain) if d}
+    fremd = sorted(a for a in adressen(gesamt) if not adresse_belegt(a, adressen(belegt), domains))
     if fremd:
         befunde.append(Befund("sperre", "Adresse ohne Beleg im Text: " + ", ".join(fremd)))
 

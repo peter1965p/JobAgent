@@ -460,3 +460,13 @@ def test_agenda_nimmt_die_langfristige_perspektive_auf(conn):
     fakt(conn, "Leitung eines Teams von rund 20 Personen")
     angaben.beantworte(conn, "perspektive", "Ich plane die nächsten Jahre bei Ihnen, nicht den Ruhestand.")
     assert ("Wohin ich will", ["Langfristig: Ich plane die nächsten Jahre bei Ihnen, nicht den Ruhestand."]) in agenda.abschnitte(conn)
+
+
+def test_links_auf_die_eigene_absenderdomain_sind_belegt():
+    from jobsuche import regeln
+    text = "Termin: https://www.ich-it.de/termine und www.ich-it.de, Code: github.com/ich/repo, fremd: www.erfunden.de"
+    befunde = regeln.pruefe("b", text, "a@firma.de", ["github.com/ich"], [], "firma.de", absender_domain="ich-it.de")
+    adressen = [b.text for b in befunde if "Adresse ohne Beleg" in b.text]
+    assert adressen == ["Adresse ohne Beleg im Text: www.erfunden.de"]
+    ohne = regeln.pruefe("b", text, "a@firma.de", ["github.com/ich"], [], "firma.de")
+    assert any("ich-it.de/termine" in b.text for b in ohne)  # ohne Absenderdomain bleibt es gesperrt

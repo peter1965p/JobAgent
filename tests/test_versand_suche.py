@@ -1612,6 +1612,35 @@ def test_mail_auf_eine_anzeige_ist_keine_initiativbewerbung(conn, tmp_path):
     assert "Initiativbewerbung" in chat.prompts[-1][0] and "<stellenanzeige>" not in chat.prompts[-1][1]
 
 
+
+def test_mail_auf_anzeige_waehlt_fakten_nach_den_punkten_der_anzeige(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    profil.lege_eigenen_fakt_an(conn, "projekt", "SoftCenter: Update-Verwaltung für Debian und Ubuntu")
+    for i in range(14):  # viel Allgemeines, das ohne Zuordnung die Liste füllt
+        profil.lege_eigenen_fakt_an(conn, "erfahrung", f"Rollout bei Energiekonzern Nummer {i}")
+    anzeige = (ANZEIGE_TEXT + "\n\nWir betreiben Debian-Server.\n\nDu hast:\n    gute Kenntnisse in Linux\n"
+               "Deine Aufgaben:\n    Updates durchführen und überwachen\n    Überwachung der Backups")
+    client, _ = _netz_anzeige(anzeige)
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
+    # Ohne Aufzählungszeichen liest die KI die Punkte heraus, Aufgaben eingeschlossen.
+    chat = _Eignung({}, liste=["gute Kenntnisse in Linux", "Updates durchführen und überwachen", "Überwachung der Backups"])
+    ki.erstelle_entwurf(conn, fid, "m", chat)
+    system, nutzer = chat.prompts[-1]
+    assert "Aufgaben" in chat.prompts[-2][0]
+    zuordnung = re.search(r"<zuordnung>\n(.*)\n</zuordnung>", nutzer, re.S).group(1)
+    assert "- Updates durchführen und überwachen" in zuordnung
+    softcenter = conn.execute("SELECT id FROM fakten WHERE text LIKE 'SoftCenter%'").fetchone()[0]
+    assert f"[F{softcenter}] SoftCenter" in nutzer and f"F{softcenter}" in zuordnung
+    assert "ohne Beleg lässt du weg" in system
+
+
+def test_punkte_der_anzeige_nehmen_aufzaehlungen_ohne_ki():
+    def chat(*a, **k):
+        raise AssertionError("bei Aufzählungen kein Modellaufruf")
+    punkte = ki.punkte_der_anzeige("Text\n- Linux\n- Python\n* Backups prüfen\n", "m", chat)
+    assert punkte == ["Linux", "Python", "Backups prüfen"]
+
 # --- Altersdiskriminierung vorbeugen ---
 
 def test_mail_verraet_das_alter_nicht_ueber_berufsjahre(conn, entwurf):

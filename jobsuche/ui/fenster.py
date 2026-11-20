@@ -408,8 +408,27 @@ class FirmenSeite(Seite):
             return self.f.melde("Wähle zuerst eine Firma.")
         modell = self.f.modell()
         land, searxng = self._suche_einstellung()
-        self.f.starte("Mail vorschlagen", lambda conn, fort: suche.schlage_mail_vor(conn, fid, modell, land, searxng, fort),
-                      nach=lambda _: self.f.zeige_seite(EntwurfSeite))
+
+        def schreiben():
+            self.f.starte("Mail vorschlagen", lambda conn, fort: suche.schlage_mail_vor(conn, fid, modell, land, searxng, fort),
+                          nach=lambda _: self.f.zeige_seite(EntwurfSeite))
+
+        def lesen(conn, fort):
+            # Gibt es eine Anzeige, liest die App sie erst Punkt für Punkt gegen deine Unterlagen. Ohne Anzeige
+            # (Initiativanfrage) gibt es nichts zu prüfen.
+            try:
+                return suche.pruefe_eignung(conn, fid, modell, melde=fort)
+            except ki.NichtMoeglich:
+                return None
+
+        def danach(eignung):
+            if eignung is None:
+                return schreiben()
+            # Unsicheres fragt die App nach, statt es in der Mail zu behaupten oder still wegzulassen.
+            eignung = ergaenze_mit_rueckfrage(self.f, self.conn, fid, eignung)
+            if self.f.frage(f"{ki.eignung_text(eignung)}\n\nIn die Mail kommt nur, was belegt ist. Jetzt schreiben?"):
+                schreiben()
+        self.f.starte("Anzeige lesen und Eignung prüfen", lesen, nach=danach)
 
     def hinzufuegen(self):
         werte = self._firmendialog("Firma hinzufügen", {})
