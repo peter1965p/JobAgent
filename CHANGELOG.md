@@ -2,6 +2,12 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.2.3 – 2026-11-20
+
+### Geändert
+- **Profil:** Signatur und Gehaltsvorstellung stehen in einer eigenen Karte „Signatur & Gehalt“ mit eigenem Speichern-Knopf, statt in die Kontaktkarte gequetscht.
+- Eine Gehaltsvorstellung als bloße Zahl („65000“) steht in der Mail als „65.000 € brutto im Jahr“.
+
 ## 0.2.2 – 2026-11-20
 
 ### Neu

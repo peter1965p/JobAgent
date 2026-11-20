@@ -1831,15 +1831,6 @@ class ProfilSeite(Seite):
         for schluessel, text in (("name", "Name"), ("email", "Mail"), ("telefon", "Telefon"), ("ort", "Ort"), ("links", "Links")):
             self.felder[schluessel] = QLineEdit()
             form.addRow(text, self.felder[schluessel])
-        self.signatur = QPlainTextEdit()
-        self.signatur.setPlaceholderText("Mail-Signatur, z. B. Name, Rolle, Telefon, Web, GitHub. Leer: nur „Viele Grüße“ und dein Name.")
-        self.signatur.setFixedHeight(120)
-        form.addRow("Signatur", self.signatur)
-        self.gehalt = QLineEdit()
-        self.gehalt.setPlaceholderText("z. B. 65.000 € brutto im Jahr")
-        self.gehalt.setToolTip("Steht nur in einer Mail, wenn die Stellenanzeige ausdrücklich nach der Gehaltsvorstellung "
-                               "fragt, und dann genau als ein fester Satz. Sonst bleibt jede Gehaltsangabe gesperrt.")
-        form.addRow("Gehaltsvorstellung", self.gehalt)
         kontakt.lage.addLayout(form)
         kontakt.lage.addWidget(knopf("Speichern", self.speichern, True))
         links.addWidget(kontakt)
@@ -1863,6 +1854,27 @@ class ProfilSeite(Seite):
         links.addWidget(stil, 1)
         lage.addLayout(links, 1)
 
+        unterschrift = Karte("Signatur & Gehalt")
+        unterschrift.lage.addWidget(label("Die Signatur steht unter jeder Mail, gegrüßt wird dann mit dem Vornamen. "
+                                          "Telefon und Links darin gelten als belegt.", "gedimmt", True))
+        self.signatur = QPlainTextEdit()
+        self.signatur.setPlaceholderText("Name\nRolle\nTel: …\nWeb: …\nGitHub: …\n\nLeer: nur „Viele Grüße“ und dein Name.")
+        self.signatur.setFixedHeight(128)
+        unterschrift.lage.addWidget(self.signatur)
+        gehalt_reihe = QHBoxLayout()
+        gehalt_reihe.addWidget(label("Gehaltsvorstellung", ""))
+        self.gehalt = QLineEdit()
+        self.gehalt.setPlaceholderText("z. B. 65000 oder 65.000 € brutto im Jahr")
+        gehalt_reihe.addWidget(self.gehalt, 1)
+        unterschrift.lage.addLayout(gehalt_reihe)
+        unterschrift.lage.addWidget(label("Kommt nur in eine Mail, wenn die Anzeige ausdrücklich nach der Gehaltsvorstellung "
+                                          "fragt, und dann als ein fester Satz. Jede andere Gehaltsangabe bleibt gesperrt.",
+                                          "gedimmt", True))
+        unterschrift.lage.addWidget(knopf("Signatur && Gehalt speichern", self.unterschrift_speichern))
+        rechts_spalte = QVBoxLayout()
+        rechts_spalte.setSpacing(18)
+        rechts_spalte.addWidget(unterschrift)
+
         rechts = Karte("Eigene Regeln")
         rechts.lage.addWidget(label("Ein Verstoß sperrt die Freigabe. Gehalt, Gesundheit, Platzhalter und unbelegte Zahlen "
                                     "sind immer gesperrt.", "gedimmt", True))
@@ -1883,7 +1895,8 @@ class ProfilSeite(Seite):
         self.meldung.setPlaceholderText("Hinweis bei einem Verstoß (optional)")
         rechts.lage.addWidget(self.meldung)
         rechts.lage.addWidget(knopf("Regel anlegen", self.anlegen))
-        lage.addWidget(rechts, 1)
+        rechts_spalte.addWidget(rechts, 1)
+        lage.addLayout(rechts_spalte, 1)
 
     def aktualisieren(self):
         daten = person.lade(self.conn)
@@ -1906,12 +1919,16 @@ class ProfilSeite(Seite):
             person.speichere(self.conn, **{k: f.text() for k, f in self.felder.items()})
         except ValueError as fehler:
             return self.f.melde(str(fehler))
+        self.f.neu_laden()
+
+    def unterschrift_speichern(self):
         signatur = self.signatur.toPlainText().strip()
         if regeln.ist_sensibel(signatur):
             return self.f.melde(profil.SENSIBEL_MELDUNG)
         db.setze_einstellung(self.conn, "mail.signatur", signatur)
         db.setze_einstellung(self.conn, "mail.gehalt", self.gehalt.text().strip())
-        self.f.neu_laden()
+        zeile = ki.gehaltszeile(self.conn)
+        self.f.melde("Gespeichert." + (f"\n\nFragt eine Anzeige nach dem Gehalt, steht in der Mail:\n„{zeile}“" if zeile else ""))
 
     def vorlage_speichern(self):
         text = self.vorlage.toPlainText().strip()

@@ -579,7 +579,10 @@ def gehalt_gefragt(conn: sqlite3.Connection, firma_id: int) -> bool:
 
 
 def gehaltszeile(conn: sqlite3.Connection) -> str:
-    wert = db.einstellung(conn, "mail.gehalt", "").strip()
+    """„65000“ oder „65.000“ wird „65.000 € brutto im Jahr“; ein eigener Text wie „60–65 T€“ bleibt, wie er ist."""
+    wert = db.einstellung(conn, "mail.gehalt", "").strip().rstrip(".")
+    if re.fullmatch(r"\d{1,3}(?:[.\s]?\d{3})+|\d{4,7}", wert):
+        wert = f"{int(re.sub(r'\D', '', wert)):,} € brutto im Jahr".replace(",", ".")
     return f"Meine Gehaltsvorstellung liegt bei {wert}." if wert else ""
 
 
