@@ -1894,3 +1894,45 @@ def test_ausschlusswoerter_nehmen_treffer_raus_und_verhindern_die_mail(conn, tmp
     firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
     with pytest.raises(ki.Ausgeschlossen):
         ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+
+
+BWE_ANZEIGE = """Wir suchen einen **IT-Spezialist KI (m/w/d)**
+
+### **Darauf können Sie sich freuen:**
+
+- unbefristeten Arbeitsvertrag
+- Hansefit
+- Bikeleasing
+
+### **Ihre Aufgaben:**
+
+- Entwicklung von KI-Agenten
+- Automatisierung von Geschäftsprozessen
+
+### **Damit überzeugen Sie uns:**
+
+- Sicherer Umgang mit C#/.NET und Python
+- Praktische Erfahrung mit Microsoft Copilot
+
+### **Wer wir sind:**
+
+Die IT Zentrale der PHW-Gruppe."""
+
+
+def test_vorteile_der_stelle_sind_keine_anforderungen():
+    assert ki.anforderungen_aus_liste(ki._anforderungsteil(BWE_ANZEIGE)) == [
+        "Sicherer Umgang mit C#/.NET und Python", "Praktische Erfahrung mit Microsoft Copilot"]
+    punkte = ki.punkte_der_anzeige(BWE_ANZEIGE, "m", None)
+    assert "Entwicklung von KI-Agenten" in punkte and not {"Hansefit", "Bikeleasing", "unbefristeten Arbeitsvertrag"} & set(punkte)
+    # Ohne erkannte Profil-Überschrift darf die Vorteilsliste auch nicht als erste Liste durchrutschen.
+    ohne = BWE_ANZEIGE.replace("Damit überzeugen Sie uns", "Noch was")
+    assert "Hansefit" not in ki.anforderungen_aus_liste(ki._anforderungsteil(ohne))
+
+
+def test_verworfene_website_nimmt_auch_ihre_namen_mit(conn):
+    fid = firmen.lege_an(conn, "BWE GmbH", website="https://fremd.de")
+    conn.execute("UPDATE firmen SET personen = 'Landrat Tobias', email = 'info@fremd.de' WHERE id = ?", (fid,))
+    conn.commit()
+    suche.verwirf_website(conn, fid, "")
+    zeile = conn.execute("SELECT personen, email, website FROM firmen WHERE id = ?", (fid,)).fetchone()
+    assert tuple(zeile) == ("", "", "")

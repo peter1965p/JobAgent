@@ -746,8 +746,11 @@ def website_gehoert_firma(conn: sqlite3.Connection, firma_id: int) -> bool:
     return quellen.name_passt(firma["name"], text)
 
 
-def verwirf_website(conn: sqlite3.Connection, firma_id: int) -> None:
-    """Entfernt die Seiten und die daraus gelesene Adresse. Die Stellenanzeige bleibt."""
+def verwirf_website(conn: sqlite3.Connection, firma_id: int, personen_vorher: str | None = None) -> None:
+    """Entfernt die Seiten und die daraus gelesene Adresse. Die Stellenanzeige bleibt. Mit `personen_vorher` gelten
+    auch die Namen aus dem fremden Impressum nicht mehr (sonst stand etwa ein Landrat als Ansprechperson da)."""
+    if personen_vorher is not None:
+        conn.execute("UPDATE firmen SET personen = ? WHERE id = ?", (personen_vorher, firma_id))
     firma = conn.execute("SELECT website, email FROM firmen WHERE id = ?", (firma_id,)).fetchone()
     host = firmen._host(firma["website"])
     conn.execute("DELETE FROM chunks WHERE art = 'firma' AND firma_id = ? AND quelle LIKE ?", (firma_id, f"%{host}%"))
@@ -775,7 +778,7 @@ def hole_inhaber(conn: sqlite3.Connection, firma_id: int, land: str = "de", sear
         except RuntimeError as ausfall:
             fehler = ausfall
         if gesucht and not fehler and not website_gehoert_firma(conn, firma_id):
-            verwirf_website(conn, firma_id)
+            verwirf_website(conn, firma_id, firma["personen"])
             fehler = SucheFehler(f"Die gefundene Website {firmen._host(website)} nennt {firma['name']} nicht im Impressum. "
                                  "Ich nutze sie nicht. Trage die richtige unter „Firmen“ selbst ein.")
     # Die Ansprechperson aus der Anzeige hilft auch, wenn die Website fehlt oder ausfällt.

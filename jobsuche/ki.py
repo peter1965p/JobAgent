@@ -147,7 +147,12 @@ MAX_ANZEIGE_PROMPT = 3000  # Das Modell hat 4096 Token Kontext.
 STUECKE_JE_ANFORDERUNG = 4
 ZITAT_WOERTER = (3, 25)
 PROFIL_ABSCHNITT = re.compile(r"(?im)^.*(profil|anforderung|qualifikation|mitbringst|bringst du mit|bringen sie mit|"
-                              r"erwarten wir|voraussetzung|requirements|what you bring).*$")
+                              r"erwarten wir|voraussetzung|requirements|what you bring|überzeugen sie uns|überzeugst du uns|"
+                              r"das zeichnet sie aus|das zeichnet dich aus|sie verfügen|du verfügst|was sie mitbringen|"
+                              r"wir wünschen uns|you have|^#*\W*(?:du hast|sie haben)\W*$).*$")
+# Überschriften über Listen mit Vorteilen der Stelle. Was darunter steht, ist keine Anforderung.
+BENEFITS = re.compile(r"(?i)freuen|wir bieten|bieten wir|bieten ihnen|bieten dir|benefits?|vorteile|darauf können|"
+                      r"what we offer|we offer|das erwartet (?:sie|dich)|unser angebot|deine extras|ihre extras")
 AUFZAEHLUNG = re.compile(r"^\s*(?:[-*•▪◦–]|\d+[.)])\s+(.+)$")
 # „Von Vorteil“ zählt halb, damit eine fehlende Kür die Eignung nicht drückt.
 KUER = re.compile(r"von vorteil|idealerweise|wünschenswert|wäre schön|nice to have|\bein plus\b|wünschen wir uns", re.I)
@@ -205,14 +210,28 @@ def _ohne_ueberlappung(stuecke: list[str], ueberlappung: int = 100) -> str:
 
 
 def _anforderungsteil(text: str) -> str:
-    """Ab der Überschrift des Profils. Kurze Zeilen gehen vor, damit kein Fließtext mit „Qualifikation“ den Anfang setzt."""
+    """Ab der Überschrift des Profils. Kurze Zeilen gehen vor, damit kein Fließtext mit „Qualifikation“ den Anfang setzt.
+    Vorteile der Stelle fliegen vorher raus, damit sie ohne erkannte Überschrift nicht als Anforderungen gelten."""
+    text = _ohne_benefits(text)
     treffer = list(PROFIL_ABSCHNITT.finditer(text))
     kopf = next((t for t in treffer if len(t.group(0).strip(" #*:")) <= 60), treffer[0] if treffer else None)
     return text[kopf.start():][:MAX_ANZEIGE_PROMPT] if kopf else text[:MAX_ANZEIGE_PROMPT]
 
 
+def _ohne_benefits(text: str) -> str:
+    """Streicht Listen unter Überschriften wie „Darauf können Sie sich freuen“ oder „Wir bieten“."""
+    zeilen, weg = [], False
+    for zeile in text.splitlines():
+        if not AUFZAEHLUNG.match(zeile.replace("\xa0", " ")) and zeile.strip():
+            weg = bool(BENEFITS.search(zeile)) and len(zeile.strip(" #*:")) <= 80
+        if not weg:
+            zeilen.append(zeile)
+    return "\n".join(zeilen)
+
+
 def anforderungen_aus_liste(teil: str) -> list[str]:
-    """Die Aufzählung direkt unter der Profil-Überschrift, bis zur nächsten Überschrift."""
+    """Die Aufzählung direkt unter der Profil-Überschrift, bis zur nächsten Überschrift. Vorteile zählen nie."""
+    teil = _ohne_benefits(teil)
     punkte: list[str] = []
     for zeile in teil.splitlines()[1:]:
         zeile = zeile.replace("\xa0", " ").strip()
@@ -483,7 +502,7 @@ def punkte_der_anzeige(anzeige: str, modell: str, chat) -> list[str]:
     """Anforderungen und Aufgaben der Anzeige für die Mail. Erst die Aufzählungen im ganzen Text, sonst fragt die KI.
     Anders als bei der Eignung zählen hier auch die Aufgaben: Sie sagen, was die Firma wirklich braucht."""
     punkte = []
-    for zeile in anzeige.splitlines():
+    for zeile in _ohne_benefits(anzeige).splitlines():
         treffer = AUFZAEHLUNG.match(zeile.replace("\xa0", " "))
         if treffer:
             punkt = re.sub(r"\s+", " ", treffer.group(1).strip(" *")).strip()
