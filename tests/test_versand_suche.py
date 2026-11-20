@@ -1872,3 +1872,25 @@ def test_viele_unbrauchbare_links_werden_nicht_endlos_probiert(monkeypatch):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     firmen.hole_seiten("https://shop.de/", client, 2)
     assert sum(p.startswith("/kontakt-") for p in abrufe) <= firmen.MAX_VERSUCHE
+
+
+def test_ausschlusswoerter_nehmen_treffer_raus_und_verhindern_die_mail(conn, tmp_path, monkeypatch):
+    db.setze_einstellung(conn, "suche.ausschluss", "TYPO3, Zeitarbeit")
+    assert ki.ausschluss_in("Pflege unserer typo3-Website", ki.ausschlusswoerter(conn)) == "TYPO3"
+    assert ki.ausschluss_in("Zeitarbeitsfirma", ["Zeitarbeit"]) == ""  # nur ganze Wörter
+    liste = [{"firma": "A GmbH", "titel": "Admin für TYPO3", "ort": "Bremen", "referenz": "a", "quelle": "x"},
+             {"firma": "B Zeitarbeit GmbH", "titel": "Admin", "ort": "Bremen", "referenz": "b", "quelle": "x"},
+             {"firma": "C GmbH", "titel": "Linux-Admin", "ort": "Bremen", "referenz": "c", "quelle": "x"}]
+    monkeypatch.setattr(suche, "_vereine", lambda listen: [t for l in listen for t in l])
+    monkeypatch.setattr(suche, "bewerte_naehe", lambda conn, t: t)
+    monkeypatch.setattr(suche, "suche", lambda *a, **k: liste)
+    auftrag = suche.Auftrag("Admin", "Bremen", "de", 50, "", ("jobboerse",), "", "")
+    ergebnis = suche.suche_ueberall(conn, auftrag)
+    assert [t["firma"] for t in ergebnis["treffer"]] == ["C GmbH"]
+    assert any("Ausgeschlossen: 2" in h for h in ergebnis["hinweise"])
+    _bereit_fuer_mail(conn, tmp_path)
+    client, _ = _netz_anzeige(ANZEIGE_TEXT + "\n\nDu pflegst unsere TYPO3-Seiten.")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
+    with pytest.raises(ki.Ausgeschlossen):
+        ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))

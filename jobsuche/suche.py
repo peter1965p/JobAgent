@@ -470,8 +470,15 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
             name, abruf(begriffe, auftrag.ort, auftrag.umkreis, auftrag.land, api, client)))
     if auftrag.arbeitszeit and {"verzeichnis", "internet"} & set(auftrag.quellen):
         hinweise.append(f"Arbeitszeit: Verzeichnis und Internet liefern Firmen, keine Stellen. Dort gilt „{ARBEITSZEIT[auftrag.arbeitszeit]}“ nicht.")
+    treffer = _vereine(listen)
+    woerter = ki.ausschlusswoerter(conn)
+    if woerter:
+        vorher = len(treffer)
+        treffer = [t for t in treffer if not ki.ausschluss_in(" ".join(str(v) for v in t.values() if isinstance(v, str)), woerter)]
+        if len(treffer) < vorher:
+            hinweise.append(f"Ausgeschlossen: {vorher - len(treffer)} Treffer mit {', '.join(woerter)}.")
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
-    return {"treffer": bewerte_naehe(conn, _vereine(listen)), "hinweise": hinweise, "branche": branche}
+    return {"treffer": bewerte_naehe(conn, treffer), "hinweise": hinweise, "branche": branche}
 
 
 def finde_passende(conn: sqlite3.Connection, modell: str, auftrag: Auftrag | None = None, melde=lambda _: None,

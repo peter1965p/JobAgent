@@ -155,6 +155,31 @@ KUER = re.compile(r"von vorteil|idealerweise|wünschenswert|wäre schön|nice to
 SELBST = re.compile(r"führerschein|reisebereitschaft|bereitschaft zu|rufbereitschaft|schicht|arbeitserlaubnis|wohnsitz|umzug", re.I)
 
 
+def ausschlusswoerter(conn: sqlite3.Connection) -> list[str]:
+    """Wörter aus „Suche → Ausschließen“, etwa TYPO3 oder Zeitarbeit. Stellen damit fliegen raus."""
+    return [w.strip() for w in db.einstellung(conn, "suche.ausschluss", "").split(",") if w.strip()]
+
+
+def ausschluss_in(text: str, woerter: list[str]) -> str:
+    """Das erste Ausschlusswort, das als ganzes Wort im Text steht, sonst leer. Groß- und Kleinschreibung zählt nicht."""
+    for wort in woerter:
+        if re.search(rf"(?<![\w]){re.escape(wort)}(?![\w])", text or "", re.I):
+            return wort
+    return ""
+
+
+class Ausgeschlossen(NichtMoeglich):
+    """Die Anzeige enthält ein Ausschlusswort. Dann schreibt die App keine Mail, auch nicht ohne Eignungsprüfung."""
+
+
+def pruefe_ausschluss(conn: sqlite3.Connection, firma_id: int) -> None:
+    anzeige, _ = anzeige_der_firma(conn, firma_id)
+    wort = ausschluss_in(anzeige, ausschlusswoerter(conn))
+    if wort:
+        raise Ausgeschlossen(f"Die Stellenanzeige enthält „{wort}“, das steht auf deiner Ausschlussliste unter „Suche“. "
+                             "Ich schreibe dafür keine Mail.")
+
+
 def anzeige_der_firma(conn: sqlite3.Connection, firma_id: int) -> tuple[str, str]:
     """(Text, Quelle) der Stellenanzeige. Die zur Übernahme passende Anzeige geht vor weiteren der Firma."""
     firma = _firma(conn, firma_id)
@@ -294,6 +319,7 @@ def pruefe_eignung(conn: sqlite3.Connection, firma_id: int, modell: str, chat=ll
                             "nichts zu prüfen, eine Initiativanfrage geht trotzdem.")
     if not rag.unterlagen(conn, "Erfahrung", 1):
         raise NichtMoeglich("Lebenslauf oder Zeugnis fehlen. Lege sie unter „Unterlagen“ an.")
+    pruefe_ausschluss(conn, firma_id)
     punkte = _anforderungen(_anforderungsteil(anzeige), modell, chat)
     if not punkte:
         raise NichtMoeglich("In der Anzeige stehen keine erkennbaren Anforderungen, eine Initiativanfrage geht trotzdem.")
@@ -515,6 +541,7 @@ def erstelle_entwurf(conn: sqlite3.Connection, firma_id: int, modell: str, chat=
     if not absender:
         raise NichtMoeglich("Trage zuerst deinen Namen unter „Profil“ ein.")
     frage, fakten, firmen_treffer = _kontext(conn, firma)
+    pruefe_ausschluss(conn, firma_id)
     stelle = stelle_der_firma(conn, firma_id)
 
     # Standard ist die komplette Mail von der KI. Die Vorlage bleibt dann Stilbeispiel, wörtlich nur auf Wunsch.

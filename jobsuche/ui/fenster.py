@@ -1186,7 +1186,13 @@ class SucheSeite(Seite):
         self.finden_knopf = knopf("Passende Firmen finden", self.passende_finden, True)
         reihe_knoepfe.addWidget(self.finden_knopf)
         reihe_knoepfe.addWidget(knopf("Mit diesen Angaben suchen", self.suchen))
-        reihe_knoepfe.addStretch()
+        reihe_knoepfe.addSpacing(18)
+        reihe_knoepfe.addWidget(label("Ausschließen:", "gedimmt"))
+        self.ausschluss = QLineEdit()
+        self.ausschluss.setPlaceholderText("Wörter mit Komma, z. B. TYPO3, Zeitarbeit")
+        self.ausschluss.setToolTip("Treffer mit einem dieser Wörter fliegen aus der Liste. Steht eines in der Stellenanzeige, "
+                                   "schreibt die App auch keine Mail.")
+        reihe_knoepfe.addWidget(self.ausschluss, 1)
         karte.lage.addLayout(reihe_knoepfe)
         lage.addWidget(karte)
         ergebnis = Karte("Treffer")
@@ -1274,6 +1280,8 @@ class SucheSeite(Seite):
                 feld.setChecked(name in gewaehlt)
             self.stichwoerter.setText(lies("stichwoerter"))
             self._internet_moeglich()
+        if not self.ausschluss.hasFocus():
+            self.ausschluss.setText(db.einstellung(self.conn, "suche.ausschluss", ""))
         abgeleitet = db.einstellung(self.conn, "suche.abgeleitet_stichwoerter", "")
         self.stichwoerter.setPlaceholderText(f"Stichwörter, leer: {abgeleitet}" if abgeleitet else "Stichwörter für Titel, leer: aus den Suchbegriffen")
         self._zeige()
@@ -1309,6 +1317,8 @@ class SucheSeite(Seite):
                 self.f.melde(str(fehler))
 
     def _auftrag(self) -> suche.Auftrag:
+        woerter = dict.fromkeys(w.strip() for w in self.ausschluss.text().split(",") if w.strip())
+        db.setze_einstellung(self.conn, "suche.ausschluss", ", ".join(woerter))
         db.setze_einstellung(self.conn, "suche.stichwoerter", ", ".join(suche.bereinige_stichwoerter(self.stichwoerter.text().split(","))))
         gewaehlt = tuple(name for name, feld in (("verzeichnis", self.q_verzeichnis), ("internet", self.q_internet),
                                                  ("jobboerse", self.q_jobboerse), ("arbeitnow", self.q_arbeitnow),
