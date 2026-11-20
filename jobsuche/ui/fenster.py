@@ -6,6 +6,8 @@ import subprocess
 import sys
 import traceback
 
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_plus
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
@@ -635,14 +637,22 @@ def ergaenze_mit_rueckfrage(f, conn, firma_id: int, eignung: dict) -> dict:
         return eignung
 
 
-def anhang_links(pfade) -> str:
-    """Anhänge als anklickbare Links. Fehlende Dateien stehen durchgestrichen da, der Versand würde sie ablehnen."""
+ENTFERNEN = "entfernen:"
+
+
+def anhang_links(pfade, entfernbar=False) -> str:
+    """Anhänge als anklickbare Links. Fehlende Dateien stehen durchgestrichen da, der Versand würde sie ablehnen.
+    Mit entfernbar steht hinter jedem Anhang ein ✕, das ihn aus dieser Mail nimmt."""
     if not pfade:
         return "Anhänge: keine"
     teile = []
     for p in pfade:
         name = html.escape(p.name)
-        teile.append(f'<a href="{html.escape(str(p), quote=True)}">{name}</a>' if p.is_file() else f"<s>{name}</s> (fehlt)")
+        ziel = html.escape(str(p), quote=True)
+        teil = f'<a href="{ziel}">{name}</a>' if p.is_file() else f"<s>{name}</s> (fehlt)"
+        if entfernbar:
+            teil += f' <a href="{ENTFERNEN}{ziel}" title="Aus dieser Mail entfernen" style="text-decoration:none">✕</a>'
+        teile.append(teil)
     return "Anhänge zum Ansehen anklicken: " + ", ".join(teile)
 
 
@@ -665,6 +675,15 @@ class EntwurfSeite(Seite):
         rechts = Karte("Mail")
         self.an = label("", "gedimmt", True)
         rechts.lage.addWidget(self.an)
+        an_reihe = QHBoxLayout()
+        an_reihe.addWidget(label("An:", "gedimmt"))
+        self.empfaenger = QLineEdit()
+        self.empfaenger.setPlaceholderText("Empfänger (eine Mailadresse)")
+        an_reihe.addWidget(self.empfaenger, 1)
+        rechts.lage.addLayout(an_reihe)
+        self.gespeichert = label("", "okText")  # kurze Bestätigung nach „Speichern“
+        rechts.lage.addWidget(self.gespeichert)
+        self.gespeichert.hide()
         self.betreff = QLineEdit()
         self.betreff.setPlaceholderText("Betreff")
         rechts.lage.addWidget(self.betreff)
@@ -676,8 +695,12 @@ class EntwurfSeite(Seite):
         # Ein Klick öffnet die Datei im Standardprogramm, damit du den Lebenslauf für die Stelle vor dem Senden siehst.
         self.anhang.setTextFormat(Qt.RichText)
         self.anhang.setTextInteractionFlags(Qt.TextBrowserInteraction)  # sonst sind die Links nicht klickbar
-        self.anhang.linkActivated.connect(lambda pfad: QDesktopServices.openUrl(QUrl.fromLocalFile(pfad)))
-        rechts.lage.addWidget(self.anhang)
+        self.anhang.linkActivated.connect(self._anhang_link)
+        anhang_reihe = QHBoxLayout()
+        anhang_reihe.addWidget(self.anhang, 1)
+        self.anhang_knopf = knopf("Anhang hinzufügen …", self.anhang_hinzufuegen)
+        anhang_reihe.addWidget(self.anhang_knopf)
+        rechts.lage.addLayout(anhang_reihe)
         reihe = QHBoxLayout()
         reihe.addWidget(knopf("Speichern", self.speichern))
         self.freigabe = knopf("Freigeben", self.freigeben, True)
@@ -718,24 +741,65 @@ class EntwurfSeite(Seite):
         self.entwurf_id = item.data(Qt.UserRole) if item else None
         if self.entwurf_id is None:
             self.an.setText("Keine offenen Entwürfe. Erstelle einen unter „Firmen“, Gesendetes steht unter „Gesendet“.")
+            self.empfaenger.clear()
             self.betreff.clear()
             self.text.clear()
             self._zeige_befunde([])
             return
         e = self.conn.execute("SELECT * FROM entwuerfe WHERE id = ?", (self.entwurf_id,)).fetchone()
         absender = person.lade(self.conn)
-        self.anhang.setText(anhang_links(profil.anhaenge_des_entwurfs(self.conn, self.entwurf_id)))
-        self.an.setText(f"Von: {absender['name']} <{absender['email']}>\nAn: {e['empfaenger']}\n"
+        offen = e["status"] in ("entwurf", "freigegeben")
+        self.anhang.setText(anhang_links(profil.anhaenge_des_entwurfs(self.conn, self.entwurf_id), entfernbar=offen))
+        self.anhang_knopf.setEnabled(offen)
+        self.an.setText(f"Von: {absender['name']} <{absender['email']}>\n"
                         f"Status: {STATUS_TEXT.get(e['status'], e['status'])} · Modell: {e['modell']}")
+        self.empfaenger.setText(e["empfaenger"])
         self.betreff.setText(e["betreff"])
         self.text.setPlainText(e["text"])
         aenderbar = e["status"] in ("entwurf", "freigegeben")
+        self.empfaenger.setReadOnly(not aenderbar)
         self.betreff.setReadOnly(not aenderbar)
         self.text.setReadOnly(not aenderbar)
         self.freigabe.setEnabled(e["status"] == "entwurf")
         self.kopie.setEnabled(e["status"] != "entwurf")
         self.senden_knopf.setEnabled(e["status"] == "freigegeben")
         self._zeige_befunde(ki.pruefe_entwurf(self.conn, self.entwurf_id))
+
+    def _anhang_link(self, ziel):
+        if not ziel.startswith(ENTFERNEN):
+            return QDesktopServices.openUrl(QUrl.fromLocalFile(ziel))
+        if self.entwurf_id is None:
+            return
+        pfad = Path(ziel[len(ENTFERNEN):])
+        if not self.f.frage(f"„{pfad.name}“ aus dieser Mail entfernen?\n\nDie Datei selbst bleibt, wo sie ist."):
+            return
+        self._anhaenge_aendern(lambda: profil.entferne_anhang_vom_entwurf(self.conn, self.entwurf_id, pfad))
+
+    def anhang_hinzufuegen(self):
+        if self.entwurf_id is None:
+            return
+        pfade, _ = QFileDialog.getOpenFileNames(self, "Anhang wählen", str(Path.home()),
+                                                "Dokumente (*.pdf *.docx *.odt *.jpg *.jpeg *.png *.txt);;Alle Dateien (*)")
+        if not pfade:
+            return
+
+        def hinzu():
+            vorher = profil.anhaenge_des_entwurfs(self.conn, self.entwurf_id)
+            alle = {str(p): p for p in vorher + [Path(p) for p in pfade]}.values()
+            if sum(p.stat().st_size for p in alle if p.is_file()) > versand.MAX_ANHANG_BYTES:
+                raise ValueError("Die Anhänge wären zusammen größer als 20 MB.")
+            for p in pfade:
+                profil.fuege_anhang_zum_entwurf(self.conn, self.entwurf_id, Path(p))
+        self._anhaenge_aendern(hinzu)
+
+    def _anhaenge_aendern(self, aenderung):
+        if self._geaendert():
+            return self.f.melde("Speichere zuerst deine Änderungen.")
+        try:
+            aenderung()
+        except ValueError as fehler:
+            return self.f.melde(str(fehler))
+        self.f.neu_laden()  # eine freigegebene Mail ist danach wieder Entwurf und muss neu freigegeben werden
 
     def _zeige_befunde(self, befunde):
         leere(self.befunde)
@@ -745,14 +809,23 @@ class EntwurfSeite(Seite):
             self.befunde.addWidget(label(("✕ " if b.stufe == "sperre" else "! ") + b.text, b.stufe, True))
 
     def _geaendert(self):
-        e = self.conn.execute("SELECT betreff, text FROM entwuerfe WHERE id = ?", (self.entwurf_id,)).fetchone()
-        return (self.betreff.text().strip(), self.text.toPlainText().strip()) != (e["betreff"].strip(), e["text"].strip())
+        e = self.conn.execute("SELECT empfaenger, betreff, text FROM entwuerfe WHERE id = ?", (self.entwurf_id,)).fetchone()
+        jetzt = (self.empfaenger.text().strip(), self.betreff.text().strip(), self.text.toPlainText().strip())
+        return jetzt != ((e["empfaenger"] or "").strip(), e["betreff"].strip(), e["text"].strip())
 
     def speichern(self):
         if self.entwurf_id is None:
             return
-        eid, betreff, text = self.entwurf_id, self.betreff.text(), self.text.toPlainText()
-        self.f.starte("Änderung lernen", lambda conn, _: ki.speichere_text(conn, eid, betreff, text))
+        eid, an, betreff, text = self.entwurf_id, self.empfaenger.text(), self.betreff.text(), self.text.toPlainText()
+        if not ki.EINE_ADRESSE.match(an.strip()):
+            return self.f.melde(f"„{an.strip()}“ ist keine einzelne Mailadresse.")
+        self.f.starte("Änderung lernen", lambda conn, _: ki.speichere_text(conn, eid, betreff, text, an),
+                      nach=lambda _: self._bestaetige("✓ Entwurf gespeichert. Zum Senden bitte neu freigeben."))
+
+    def _bestaetige(self, text):
+        self.gespeichert.setText(f"{text}  ({datetime.now():%H:%M:%S})")
+        self.gespeichert.show()
+        QTimer.singleShot(6000, self.gespeichert.hide)
 
     def freigeben(self):
         if self.entwurf_id is None:

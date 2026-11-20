@@ -65,6 +65,29 @@ def anhaenge_des_entwurfs(conn: sqlite3.Connection, entwurf_id: int) -> list[Pat
     return anhaenge(conn)
 
 
+def setze_anhaenge_des_entwurfs(conn: sqlite3.Connection, entwurf_id: int, pfade: list[Path]) -> None:
+    """Legt die Anhänge dieser einen Mail fest. Wie eine Textänderung kostet das die Freigabe."""
+    e = conn.execute("SELECT status FROM entwuerfe WHERE id = ?", (entwurf_id,)).fetchone()
+    if not e or e[0] not in ("entwurf", "freigegeben"):
+        raise ValueError("Bei gesendeten Mails lassen sich die Anhänge nicht mehr ändern.")
+    eindeutig = list(dict.fromkeys(str(Path(p)) for p in pfade))
+    conn.execute("UPDATE entwuerfe SET anhaenge = ?, status = 'entwurf', freigegeben_am = NULL WHERE id = ?",
+                 (json.dumps(eindeutig), entwurf_id))
+    conn.commit()
+
+
+def fuege_anhang_zum_entwurf(conn: sqlite3.Connection, entwurf_id: int, pfad: Path) -> None:
+    pfad = Path(pfad)
+    if not pfad.is_file():
+        raise ValueError(f"Datei nicht gefunden: {pfad.name}")
+    setze_anhaenge_des_entwurfs(conn, entwurf_id, anhaenge_des_entwurfs(conn, entwurf_id) + [pfad])
+
+
+def entferne_anhang_vom_entwurf(conn: sqlite3.Connection, entwurf_id: int, pfad: Path) -> None:
+    bleiben = [p for p in anhaenge_des_entwurfs(conn, entwurf_id) if str(p) != str(Path(pfad))]
+    setze_anhaenge_des_entwurfs(conn, entwurf_id, bleiben)
+
+
 def lies_unterlagen(conn: sqlite3.Connection) -> list[str]:
     """Liest geänderte Unterlagen ein und gibt Probleme als Klartext zurück."""
     probleme = []

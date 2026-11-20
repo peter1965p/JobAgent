@@ -597,16 +597,25 @@ ALTER_REGEL = ("Ausnahme zu Zahlen aus <fakten>: Nenne keine Gesamtzahl an Beruf
                "Stationen und aktuelle Technik nach vorn. Alter und Ruhestand sind kein Thema. ")
 
 
-def speichere_text(conn: sqlite3.Connection, entwurf_id: int, betreff: str, text: str) -> None:
-    """Deine Änderung wird zur Lektion. Eine freigegebene Mail verliert dabei die Freigabe."""
-    e = conn.execute("SELECT status FROM entwuerfe WHERE id = ?", (entwurf_id,)).fetchone()
+EINE_ADRESSE = re.compile(r"^[^@\s,;<>\"]+@[^@\s,;<>\"]+\.[a-z]{2,}$", re.IGNORECASE)
+
+
+def speichere_text(conn: sqlite3.Connection, entwurf_id: int, betreff: str, text: str, empfaenger: str | None = None) -> None:
+    """Deine Änderung wird zur Lektion. Eine freigegebene Mail verliert dabei die Freigabe.
+    Ein geänderter Empfänger muss genau eine Mailadresse sein; die Empfängerprüfung läuft danach wie immer."""
+    e = conn.execute("SELECT status, empfaenger, firma_id FROM entwuerfe WHERE id = ?", (entwurf_id,)).fetchone()
     if e["status"] not in ("entwurf", "freigegeben"):
         raise NichtMoeglich("Bereits gesendete Mails lassen sich nicht mehr ändern.")
+    empfaenger = (empfaenger if empfaenger is not None else e["empfaenger"]).strip()
+    if not EINE_ADRESSE.match(empfaenger):
+        raise NichtMoeglich(f"„{empfaenger}“ ist keine einzelne Mailadresse.")
     conn.execute(
-        "UPDATE entwuerfe SET betreff = ?, text = ?, status = 'entwurf', freigegeben_am = NULL WHERE id = ?",
-        (betreff.strip(), text.strip(), entwurf_id),
+        "UPDATE entwuerfe SET empfaenger = ?, betreff = ?, text = ?, status = 'entwurf', freigegeben_am = NULL WHERE id = ?",
+        (empfaenger, betreff.strip(), text.strip(), entwurf_id),
     )
     conn.commit()
+    if empfaenger.lower() != (e["empfaenger"] or "").strip().lower():
+        db.protokolliere(conn, "Empfänger geändert", f"{e['empfaenger']} → {empfaenger}", e["firma_id"])
     lernen.merke_korrektur(conn, entwurf_id)
 
 

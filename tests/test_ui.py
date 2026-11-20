@@ -512,6 +512,35 @@ def test_anhaenge_des_entwurfs_lassen_sich_vor_dem_senden_oeffnen(app, f, tmp_pa
     assert geoeffnet == [str(cv)]
 
 
+def test_entwurf_anhang_hinzufuegen_und_entfernen_kostet_die_freigabe(app, f, tmp_path, monkeypatch):
+    import json
+    from PySide6.QtWidgets import QFileDialog
+    cv, extra = tmp_path / "CV.pdf", tmp_path / "Zertifikat.pdf"
+    cv.write_bytes(b"%PDF")
+    extra.write_bytes(b"%PDF")
+    firma = f.conn.execute("INSERT INTO firmen (name, email) VALUES ('X GmbH', 'a@x.de')").lastrowid
+    eid = f.conn.execute(
+        "INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt, anhaenge, status, freigegeben_am) "
+        "VALUES (?, 'a@x.de', 'b', 'Hallo', 'Hallo', 'm', ?, ?, 'freigegeben', ?)",
+        (firma, db.jetzt(), json.dumps([str(cv)]), db.jetzt())).lastrowid
+    f.conn.commit()
+    f.zeige_seite(fenster.EntwurfSeite)
+    seite = f.stapel.currentWidget()
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *a, **k: ([str(extra), str(cv)], ""))
+    seite.anhang_hinzufuegen()
+    assert profil.anhaenge_des_entwurfs(f.conn, eid) == [cv, extra]  # doppelt kommt nicht doppelt rein
+    assert f.conn.execute("SELECT status FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0] == "entwurf"
+    assert f'href="{fenster.ENTFERNEN}{extra}"' in seite.anhang.text()
+    monkeypatch.setattr(f, "frage", lambda text: True)
+    seite.anhang.linkActivated.emit(fenster.ENTFERNEN + str(cv))
+    assert profil.anhaenge_des_entwurfs(f.conn, eid) == [extra]
+    assert cv.is_file()  # nur aus der Mail genommen, nicht gelöscht
+    f.conn.execute("UPDATE entwuerfe SET status = 'gesendet' WHERE id = ?", (eid,))
+    f.conn.commit()
+    seite.lade()
+    assert not seite.anhang_knopf.isEnabled() and fenster.ENTFERNEN not in seite.anhang.text()
+
+
 def test_eignung_fragt_offenes_nach_und_uebernimmt_die_antwort(app, f, monkeypatch):
     import json
     from jobsuche import ki, suche
@@ -611,3 +640,27 @@ def test_suche_seite_neue_stellenquellen_und_dialoge(app, f, monkeypatch):
     assert {"postfach", "adzuna"} <= set(auftraege[-1].quellen)
     assert fenster.db.einstellung(f.conn, "suche.stichwoerter", "") == "Admin, Support"
     assert "Ort unklar" in s.ausfaelle.text()
+
+
+def test_entwurf_empfaenger_aenderbar_und_geprueft(app, f, monkeypatch):
+    from jobsuche import ki
+    firma = f.conn.execute("INSERT INTO firmen (name, email) VALUES ('X GmbH', 'a@x.de')").lastrowid
+    eid = f.conn.execute(
+        "INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, erstellt, status, freigegeben_am) "
+        "VALUES (?, 'einkauf@x.de', 'b', 'Hallo', 'Hallo', 'm', ?, 'freigegeben', ?)", (firma, db.jetzt(), db.jetzt())).lastrowid
+    f.conn.commit()
+    f.zeige_seite(fenster.EntwurfSeite)
+    seite = f.stapel.currentWidget()
+    assert seite.empfaenger.text() == "einkauf@x.de"
+    meldungen = []
+    monkeypatch.setattr(f, "melde", meldungen.append)
+    seite.empfaenger.setText("a@x.de, b@y.de")
+    seite.speichern()
+    assert meldungen and "keine einzelne" in meldungen[0]
+    with pytest.raises(ki.NichtMoeglich):
+        ki.speichere_text(f.conn, eid, "b", "Hallo", "x\r\nBcc: b@y.de")
+    ki.speichere_text(f.conn, eid, "b", "Hallo", " personal@x.de ")
+    e = f.conn.execute("SELECT empfaenger, status FROM entwuerfe WHERE id = ?", (eid,)).fetchone()
+    assert (e["empfaenger"], e["status"]) == ("personal@x.de", "entwurf")
+    seite._bestaetige("✓ Entwurf gespeichert.")
+    assert seite.gespeichert.isVisibleTo(seite) and "gespeichert" in seite.gespeichert.text()
