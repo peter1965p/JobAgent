@@ -17,6 +17,12 @@ import httpx
 from . import config, regeln
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
+# Fahrstrecken über den öffentlichen OSRM-Server von OpenStreetMap. Eine Anfrage je Suche für alle Treffer zusammen.
+OSRM = "https://router.project-osrm.org/table/v1/driving/"
+OSRM_MAX_ZIELE = 90
+BUNDESLAENDER = ("Baden-Württemberg", "Bayern", "Berlin", "Brandenburg", "Bremen", "Hamburg", "Hessen", "Mecklenburg-Vorpommern",
+                 "Niedersachsen", "Nordrhein-Westfalen", "Rheinland-Pfalz", "Saarland", "Sachsen", "Sachsen-Anhalt",
+                 "Schleswig-Holstein", "Thüringen")
 # Bei Überlastung fällt die Suche auf den nächsten Server zurück. Der letzte wird von VK (Russland) betrieben.
 OVERPASS = (
     "https://overpass-api.de/api/interpreter",
@@ -64,6 +70,7 @@ class Gebiet:
     osm_typ: str = ""
     osm_id: int = 0
     bbox: tuple[float, float, float, float] | None = None  # Süd, Nord, West, Ost
+    flaeche: tuple = ()  # Außenringe der Grenze als ((lon, lat), …), vereinfacht. Leer: nur bbox bzw. Radius.
 
 
 def _client(client: httpx.Client | None, timeout: int = 90) -> httpx.Client:
@@ -102,17 +109,43 @@ def finde_gebiet(ort: str, land: str, client: httpx.Client | None = None) -> Geb
         raise SucheFehler(f"Unbekanntes Land: {land}")
     anfrage = ort.strip() or LAENDER[land]
     try:
-        antwort = _frage_nominatim(_client(client), {"q": anfrage, "countrycodes": land, "format": "jsonv2", "limit": 1})
+        antwort = _frage_nominatim(_client(client), {"q": anfrage, "countrycodes": land, "format": "jsonv2", "limit": 1,
+                                                     "polygon_geojson": 1, "polygon_threshold": 0.01})
     except httpx.HTTPError as fehler:
         raise SucheFehler(f"Der Ortsdienst ist nicht erreichbar: {fehler}") from fehler
     if antwort.status_code != 200:
         raise SucheFehler(f"Der Ortsdienst meldet {antwort.status_code}.")
-    treffer = antwort.json()
-    if not treffer:
+    try:
+        treffer = antwort.json()
+    except ValueError as fehler:
+        raise SucheFehler("Der Ortsdienst lieferte keine lesbare Antwort.") from fehler
+    if not isinstance(treffer, list) or not treffer or not isinstance(treffer[0], dict) or "lat" not in treffer[0]:
         raise SucheFehler(f"„{anfrage}“ habe ich in {LAENDER[land]} nicht gefunden.")
     t = treffer[0]
     bbox = tuple(map(float, t["boundingbox"])) if len(t.get("boundingbox") or []) == 4 else None
-    return Gebiet(anfrage, land, float(t["lat"]), float(t["lon"]), t.get("osm_type", ""), int(t.get("osm_id", 0)), bbox)
+    return Gebiet(anfrage, land, float(t["lat"]), float(t["lon"]), t.get("osm_type", ""), int(t.get("osm_id", 0)), bbox,
+                  _ringe(t.get("geojson")))
+
+
+def _ringe(geojson) -> tuple:
+    """Außenringe eines (Multi-)Polygons. Löcher bleiben unberücksichtigt, Enklaven sind für die Jobsuche egal."""
+    if not isinstance(geojson, dict):
+        return ()
+    if geojson.get("type") == "Polygon":
+        polygone = [geojson.get("coordinates") or []]
+    elif geojson.get("type") == "MultiPolygon":
+        polygone = geojson.get("coordinates") or []
+    else:
+        return ()
+    return tuple(tuple((float(p[0]), float(p[1])) for p in poly[0]) for poly in polygone if poly and len(poly[0]) >= 3)
+
+
+def _im_ring(ring: tuple, lat: float, lon: float) -> bool:
+    drin = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+        if (y1 > lat) != (y2 > lat) and lon < (x2 - x1) * (lat - y1) / (y2 - y1) + x1:
+            drin = not drin
+    return drin
 
 
 def _frage_nominatim(client: httpx.Client, params: dict) -> httpx.Response:
@@ -130,11 +163,30 @@ def _km(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> int:
 
 
 def liegt_im_gebiet(gebiet: Gebiet, umkreis: int, lat: float, lon: float) -> bool:
-    """Eine Region gilt über ihr umschließendes Rechteck, das ist am Rand ungenau."""
+    """Eine Region gilt über ihre Grenze, ohne Grenze über ihr umschließendes Rechteck (am Rand ungenau)."""
+    if not umkreis and gebiet.flaeche:
+        return any(_im_ring(ring, lat, lon) for ring in gebiet.flaeche)
     if not umkreis and gebiet.bbox and gebiet.osm_typ in ("relation", "way"):
         sued, nord, west, ost = gebiet.bbox
         return sued <= lat <= nord and west <= lon <= ost
     return _km(gebiet.lat, gebiet.lon, lat, lon) <= (umkreis or 25)
+
+
+def fahrstrecken(start: tuple[float, float], ziele: list[tuple[float, float]], client: httpx.Client | None = None) -> list[int | None]:
+    """Fahrstrecke in km mit dem Auto von `start` (lat, lon) zu jedem Ziel. None: kein Weg oder Dienst nicht erreichbar.
+    Übertragen werden nur Koordinaten: der Suchort und die Orte der Treffer, keine Namen."""
+    ergebnis: list[int | None] = []
+    netz = _client(client, 30)
+    for i in range(0, len(ziele), OSRM_MAX_ZIELE):
+        teil = ziele[i:i + OSRM_MAX_ZIELE]
+        punkte = ";".join(f"{lon:.5f},{lat:.5f}" for lat, lon in [start, *teil])
+        try:
+            antwort = netz.get(OSRM + punkte, params={"sources": 0, "annotations": "distance"})
+            zeile = antwort.json()["distances"][0][1:] if antwort.status_code == 200 else [None] * len(teil)
+        except (httpx.HTTPError, ValueError, KeyError, IndexError):
+            zeile = [None] * len(teil)
+        ergebnis += [round(m / 1000) if isinstance(m, (int, float)) else None for m in zeile]
+    return ergebnis
 
 
 def koordinaten_der_plz(plz: str, land: str, client: httpx.Client | None = None) -> tuple[float, float] | None:
@@ -223,6 +275,7 @@ def verzeichnis(gebiet: Gebiet, umkreis: int, branche: str, client: httpx.Client
             "beruf": "",
             "ort": tags.get("addr:city", "").strip(),
             "entfernung": entfernung,
+            "lat": mitte.get("lat"), "lon": mitte.get("lon"),
             "url": website,
             "website": website,
             "quelle": "Verzeichnis",

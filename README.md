@@ -2,7 +2,7 @@
 
 Lokale Desktop-App für Linux zur Direktansprache von Firmen: Sie sucht auf Wunsch jede Nacht passende Firmen, findet den Inhaber auf deren Seiten, bewertet die Passung und legt dir morgens einen Bericht mit Mailvorschlägen hin. Jede Mail prüfst und gibst du selbst frei. Lebenslauf und Agenda erstellt sie bei Bedarf mit dir.
 
-Datenbank, Suche und LLM laufen auf dem eigenen Rechner. Nach außen gehen nur Suchanfragen (Gebiet, Branche, Berufe), Abrufe öffentlicher Firmenseiten und Modell-Downloads. Jede Person hat ihre eigene Datenbank.
+Datenbank, Suche und LLM laufen auf dem eigenen Rechner. Nach außen gehen nur Suchanfragen (Gebiet, Branche, Berufe), Abrufe öffentlicher Firmenseiten, Koordinaten für die Fahrstrecke (Suchort bzw. Wohnort-Mitte und Orte der Treffer, an den OSRM-Server von OpenStreetMap) und Modell-Downloads. Wer statt des lokalen Modells Claude wählt, schickt nach einmaliger Zustimmung auch Unterlagen an Anthropic. Was sich je Version ändert, steht in [CHANGELOG.md](CHANGELOG.md). Jede Person hat ihre eigene Datenbank.
 
 ## Einrichten
 

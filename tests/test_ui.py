@@ -701,3 +701,29 @@ def test_mail_vorschlagen_liest_erst_die_anzeige_und_fragt_unsicheres_nach(app, 
     warte(app, f)
     warte(app, f)
     assert geschrieben == [fid, fid] and gefragt == []  # Initiativanfrage: nichts zu prüfen, direkt schreiben
+
+
+def test_bundesland_auswahl_und_fortschrittsbalken(app, f):
+    f.zeige_seite(fenster.SucheSeite)
+    s = f.stapel.currentWidget()
+    s._waehle(s.gebiet, "Niedersachsen")
+    assert s.wo.text() == "Niedersachsen" and s.umkreis.currentData() == 0 and not s.wo.isEnabled()
+    s._waehle(s.gebiet, "")
+    assert s.wo.text() == "" and s.wo.isEnabled() and s.umkreis.currentData() == 50
+    f._zeige_balken("Orte bestimmen: 12 von 40")
+    assert f.balken.maximum() == 40 and f.balken.value() == 12 and f.balken.isVisibleTo(f)
+    f._zeige_balken("Suche: Jobbörse")
+    assert not f.balken.isVisibleTo(f)  # ohne Zählung kein Balken
+    assert fenster.km_text({"entfernung": 47, "luftlinie": False}) == 47
+    assert fenster.km_text({"entfernung": 39}) == "≈39"
+
+
+def test_variantendialog_uebernimmt_die_gewaehlte_fassung(app):
+    from jobsuche import regeln
+    d = fenster.VariantenDialog([{"name": "A", "text": "Text A", "befunde": []},
+                                 {"name": "B", "text": "Text B", "befunde": [regeln.Befund("sperre", "Zahl ohne Beleg")]}])
+    assert d.reiter.tabText(1) == "B ✕"
+    d.reiter.setCurrentIndex(1)
+    d.texte[1].setPlainText("Text B geändert")
+    d._uebernehmen()
+    assert d.gewaehlt == "Text B geändert"

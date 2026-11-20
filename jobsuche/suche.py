@@ -69,6 +69,10 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
                 "beruf": str(stelle.get("hauptberuf", "")).strip(),
                 "ort": (orte[0].get("adresse") or {}).get("ort", ""),
                 "entfernung": stelle.get("entfernung"),
+                "lat": orte[0].get("breite"), "lon": orte[0].get("laenge"),
+                # Manche Anzeigen nennen mehrere Standorte (etwa Hamburg und Dortmund). Welcher zählt, entscheidet das Gebiet.
+                "standorte": [((o.get("adresse") or {}).get("ort", ""), o.get("breite"), o.get("laenge")) for o in orte
+                              if isinstance(o.get("breite"), (int, float)) and isinstance(o.get("laenge"), (int, float))],
                 "url": stelle.get("externeUrl") or ANZEIGE.format(referenz),
                 "website": "",
                 "quelle": "Jobbörse",
@@ -372,7 +376,8 @@ def nur_im_gebiet(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftra
     netz = client or httpx.Client(follow_redirects=True, timeout=10, headers={"User-Agent": config.USER_AGENT})
     sitze = _sitze(conn, treffer, auftrag.land, netz, melde)
     bleiben, zu_weit, unklar = [], 0, 0
-    for t in treffer:
+    for nummer, t in enumerate(treffer, 1):
+        melde(f"Orte bestimmen: {nummer} von {len(treffer)}")
         plz, ort, kurz, konzern = sitze[t["website"]] or ("", "", "", "")
         punkt = _koordinaten(conn, plz, auftrag.land, client) if plz else None
         if not punkt:
@@ -380,7 +385,8 @@ def nur_im_gebiet(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftra
         elif not quellen.liegt_im_gebiet(gebiet, auftrag.umkreis, *punkt):
             zu_weit += 1
         else:
-            bleiben.append({**t, "ort": ort, "entfernung": quellen._km(gebiet.lat, gebiet.lon, *punkt), "titel": kurz or t["titel"], "konzern": konzern})
+            bleiben.append({**t, "ort": ort, "entfernung": quellen._km(gebiet.lat, gebiet.lon, *punkt), "lat": punkt[0], "lon": punkt[1],
+                            "titel": kurz or t["titel"], "konzern": konzern})
     teile = [text for zahl, text in ((zu_weit, f"{zu_weit} außerhalb des Gebiets"), (unklar, f"{unklar} ohne lesbare Adresse")) if zahl]
     return bleiben, f"Internet: aussortiert, weil der Firmensitz nicht passt: {', '.join(teile)}." if teile else ""
 
@@ -477,8 +483,136 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         treffer = [t for t in treffer if not ki.ausschluss_in(" ".join(str(v) for v in t.values() if isinstance(v, str)), woerter)]
         if len(treffer) < vorher:
             hinweise.append(f"Ausgeschlossen: {vorher - len(treffer)} Treffer mit {', '.join(woerter)}.")
+    treffer = mit_fahrstrecke(conn, treffer, auftrag, hinweise, melde, client)
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
     return {"treffer": bewerte_naehe(conn, treffer), "hinweise": hinweise, "branche": branche}
+
+
+def gemerktes_gebiet(conn: sqlite3.Connection, ort: str, land: str, client=None) -> "quellen.Gebiet":
+    """Wie `quellen.finde_gebiet`, aber gemerkt: Grenzen und Ortsmitten ändern sich nicht, der Ortsdienst erlaubt nur 1 Anfrage/s."""
+    schluessel = f"cache.gebiet.{land}.{ort.strip().lower()}"
+    gemerkt = json.loads(db.einstellung(conn, schluessel, "") or "null")
+    if gemerkt:
+        gemerkt["bbox"] = tuple(gemerkt["bbox"]) if gemerkt.get("bbox") else None
+        gemerkt["flaeche"] = tuple(tuple(tuple(p) for p in ring) for ring in gemerkt.get("flaeche") or ())
+        return quellen.Gebiet(**gemerkt)
+    gebiet = quellen.finde_gebiet(ort, land, client)
+    db.setze_einstellung(conn, schluessel, json.dumps(gebiet.__dict__))
+    return gebiet
+
+
+def _startpunkt(conn: sqlite3.Connection, auftrag: Auftrag, client) -> tuple[tuple[float, float] | None, "quellen.Gebiet | None"]:
+    """Beim Umkreis zählt die Strecke ab dem Suchort, bei einer ganzen Region ab deinem Wohnort aus dem Profil."""
+    try:
+        gebiet = gemerktes_gebiet(conn, auftrag.ort, auftrag.land, client) if auftrag.ort.strip() else None
+    except SucheFehler:
+        gebiet = None
+    if auftrag.umkreis and gebiet:
+        return (gebiet.lat, gebiet.lon), gebiet
+    zeile = conn.execute("SELECT ort FROM person WHERE id = 1").fetchone()
+    wohnort = (zeile[0] or "").strip() if zeile else ""
+    if not wohnort:
+        return None, gebiet
+    try:
+        heim = gemerktes_gebiet(conn, wohnort, auftrag.land, client)
+        return (heim.lat, heim.lon), gebiet
+    except SucheFehler:
+        return None, gebiet
+
+
+MAX_ORTE_VERORTEN = 40  # Der Ortsdienst erlaubt 1 Anfrage/s; gemerkte Orte kosten nichts.
+
+
+def _ortsname(ort: str) -> str:
+    """„Hamburg, Remote“ oder „Dortmund (Mitte)“ wird „Hamburg“ bzw. „Dortmund“."""
+    return re.split(r"[,(/;|]| - | oder ", ort or "")[0].strip()
+
+
+def _orte_verorten(conn: sqlite3.Connection, treffer: list[dict], land: str, melde=lambda _: None, client=None) -> None:
+    """Portale, Alerts und Arbeitnow liefern nur einen Ortsnamen. Ohne Koordinaten griffe weder die Landesgrenze noch
+    die Fahrstrecke, und eine Stelle in Hamburg stünde bei „Ganz Nordrhein-Westfalen“."""
+    ohne = [t for t in treffer if not isinstance(t.get("lat"), (int, float)) and _ortsname(t.get("ort", ""))]
+    namen = list(dict.fromkeys(_ortsname(t["ort"]) for t in ohne))[:MAX_ORTE_VERORTEN]
+    punkte = {}
+    for nummer, name in enumerate(namen, 1):
+        melde(f"Orte bestimmen: {nummer} von {len(namen)}")
+        if re.fullmatch(r"(?i)remote|homeoffice|deutschland|bundesweit|germany", name):
+            continue
+        try:
+            g = gemerktes_gebiet(conn, name, land, client)
+            punkte[name] = (g.lat, g.lon)
+        except SucheFehler:
+            continue
+    for t in ohne:
+        punkt = punkte.get(_ortsname(t["ort"]))
+        if punkt:
+            t["lat"], t["lon"] = punkt
+
+
+def _passenden_standort_waehlen(treffer: list[dict], auftrag: Auftrag, gebiet, start) -> None:
+    """Bei mehreren Standorten zählt der im Gebiet bzw. der nächste zum Start. Die übrigen stehen als Zahl hinter dem Ort."""
+    for t in treffer:
+        standorte = t.get("standorte") or []
+        if len(standorte) < 2:
+            continue
+        drin = [o for o in standorte if gebiet and not auftrag.umkreis and quellen.liegt_im_gebiet(gebiet, 0, o[1], o[2])]
+        bezug = start or ((gebiet.lat, gebiet.lon) if gebiet else None)
+        kandidaten = drin or standorte
+        wahl = min(kandidaten, key=lambda o: quellen._km(bezug[0], bezug[1], o[1], o[2])) if bezug else kandidaten[0]
+        andere = len(standorte) - 1
+        t["ort"] = f"{wahl[0]} (+{andere} weitere{'r' if andere == 1 else ''} Standort{'' if andere == 1 else 'e'})"
+        t["lat"], t["lon"] = wahl[1], wahl[2]
+
+
+def mit_fahrstrecke(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auftrag, hinweise: list[str],
+                    melde=lambda _: None, client=None) -> list[dict]:
+    """Ersetzt die Luftlinie durch die Fahrstrecke mit dem Auto und sortiert beim Umkreis aus, was auf der Straße zu weit ist.
+    Bei einer ganzen Region (etwa einem Bundesland) fliegt raus, was außerhalb ihrer Grenze liegt. Ohne Koordinaten bleibt alles,
+    wie es ist; ohne Routendienst bleibt die Luftlinie und ist als solche markiert."""
+    if not auftrag.ort.strip() or not treffer:
+        return treffer
+    _orte_verorten(conn, treffer, auftrag.land, melde, client)
+    mit_ort = [t for t in treffer if isinstance(t.get("lat"), (int, float)) and isinstance(t.get("lon"), (int, float))]
+    if not mit_ort:
+        return treffer
+    melde("Fahrstrecken berechnen")
+    start, gebiet = _startpunkt(conn, auftrag, client)
+    _passenden_standort_waehlen(mit_ort, auftrag, gebiet, start)
+    if not auftrag.umkreis and gebiet and (gebiet.flaeche or gebiet.bbox):
+        draussen = [t for t in mit_ort if not quellen.liegt_im_gebiet(gebiet, 0, t["lat"], t["lon"])]
+        if draussen:
+            weg = {id(t) for t in draussen}
+            treffer = [t for t in treffer if id(t) not in weg]
+            mit_ort = [t for t in mit_ort if id(t) not in weg]
+            hinweise.append(f"Gebiet: {len(draussen)} Treffer außerhalb von {auftrag.ort} aussortiert.")
+    if not start or not mit_ort:
+        return treffer
+    offen, schluessel = [], {}
+    for t in mit_ort:
+        k = f"cache.strecke.{start[0]:.3f},{start[1]:.3f}.{t['lat']:.3f},{t['lon']:.3f}"
+        gemerkt = db.einstellung(conn, k, "")
+        if gemerkt:
+            t["entfernung"], t["luftlinie"] = int(gemerkt), False
+        else:
+            offen.append(t)
+            schluessel[id(t)] = k
+    if offen:
+        strecken = quellen.fahrstrecken(start, [(t["lat"], t["lon"]) for t in offen], client)
+        for t, km in zip(offen, strecken):
+            if km is None:
+                t["entfernung"], t["luftlinie"] = quellen._km(start[0], start[1], t["lat"], t["lon"]), True
+            else:
+                t["entfernung"], t["luftlinie"] = km, False
+                db.setze_einstellung(conn, schluessel[id(t)], str(km))
+        if any(km is None for km in strecken):
+            hinweise.append("Fahrstrecke: Der Routendienst war nicht für alle Treffer erreichbar, dort steht die Luftlinie (≈).")
+    if auftrag.umkreis:
+        zu_weit = [t for t in mit_ort if not t.get("luftlinie") and t["entfernung"] > auftrag.umkreis]
+        if zu_weit:
+            weg = {id(t) for t in zu_weit}
+            treffer = [t for t in treffer if id(t) not in weg]
+            hinweise.append(f"Fahrstrecke: {len(zu_weit)} Treffer mehr als {auftrag.umkreis} km mit dem Auto entfernt.")
+    return treffer
 
 
 def finde_passende(conn: sqlite3.Connection, modell: str, auftrag: Auftrag | None = None, melde=lambda _: None,

@@ -32,6 +32,12 @@ def modelle() -> list[str]:
 
 CLAUDE_PREFIX = "claude:"
 CLAUDE_MODELLE = ["claude:claude-haiku-5-5", "claude:claude-sonnet-5-5"]  # feste IDs, kein Alias
+# Die Mail ist der eine Text, der zählt: Mit Claude schreibt sie das stärkere Modell, Prüfungen bleiben beim schnellen.
+CLAUDE_SCHREIBMODELL = "claude:claude-sonnet-5-5"
+
+
+def schreibmodell(modell: str) -> str:
+    return CLAUDE_SCHREIBMODELL if ist_claude(modell) else modell
 CLAUDE_EFFORT = "medium"  # gilt nur für die Aufrufe von Job Agent, Claude Code selbst bleibt unberührt
 CLAUDE_ZEIT = 300
 # Ab diesem Anteil am 5-Stunden- oder Wochenkontingent nimmt die App bis zum Reset das lokale Modell,

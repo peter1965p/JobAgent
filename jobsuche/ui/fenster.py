@@ -2,6 +2,7 @@
 
 import html
 import json
+import re
 import subprocess
 import sys
 import traceback
@@ -11,11 +12,11 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIntValidator, QPainter, QPen
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIntValidator, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTableWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -657,6 +658,14 @@ def ergaenze_mit_rueckfrage(f, conn, firma_id: int, eignung: dict) -> dict:
 
 
 ENTFERNEN = "entfernen:"
+FORTSCHRITT = re.compile(r"(\d+)\s+von\s+(\d+)")
+
+
+def km_text(t: dict):
+    """Zahl für die Tabelle, damit sie sortierbar bleibt; Luftlinie mit ≈ davor."""
+    if t.get("entfernung") is None:
+        return ""
+    return f"≈{t['entfernung']}" if t.get("luftlinie", True) else t["entfernung"]
 
 
 def anhang_links(pfade, entfernbar=False) -> str:
@@ -673,6 +682,42 @@ def anhang_links(pfade, entfernbar=False) -> str:
             teil += f' <a href="{ENTFERNEN}{ziel}" title="Aus dieser Mail entfernen" style="text-decoration:none">✕</a>'
         teile.append(teil)
     return "Anhänge zum Ansehen anklicken: " + ", ".join(teile)
+
+
+class VariantenDialog(QDialog):
+    """Zeigt die Fassungen nebeneinander als Reiter. Befunde der Prüfung stehen unter jedem Text."""
+
+    def __init__(self, varianten: list[dict], eltern=None):
+        super().__init__(eltern)
+        self.setWindowTitle("Welche Fassung soll es sein?")
+        self.resize(860, 640)
+        self.gewaehlt = None
+        lage = QVBoxLayout(self)
+        self.reiter = QTabWidget()
+        self.texte = []
+        for v in varianten:
+            seite = QWidget()
+            innen = QVBoxLayout(seite)
+            feld = QPlainTextEdit(v["text"])  # darf hier schon angepasst werden
+            innen.addWidget(feld, 1)
+            befunde = v.get("befunde") or []
+            if not befunde:
+                innen.addWidget(label("✓ Alle Prüfungen bestanden.", "okText"))
+            for b in befunde:
+                innen.addWidget(label(("✕ " if b.stufe == "sperre" else "! ") + b.text, b.stufe, True))
+            self.reiter.addTab(seite, v["name"] + ("" if not any(b.stufe == "sperre" for b in befunde) else " ✕"))
+            self.texte.append(feld)
+        lage.addWidget(self.reiter, 1)
+        knoepfe = QDialogButtonBox()
+        knoepfe.addButton("Diese übernehmen", QDialogButtonBox.AcceptRole)
+        knoepfe.addButton("Abbrechen", QDialogButtonBox.RejectRole)
+        knoepfe.accepted.connect(self._uebernehmen)
+        knoepfe.rejected.connect(self.reject)
+        lage.addWidget(knoepfe)
+
+    def _uebernehmen(self):
+        self.gewaehlt = self.texte[self.reiter.currentIndex()].toPlainText()
+        self.accept()
 
 
 class EntwurfSeite(Seite):
@@ -728,6 +773,9 @@ class EntwurfSeite(Seite):
         reihe.addWidget(self.senden_knopf)
         self.kopie = knopf("Kopieren", self.kopieren)
         reihe.addWidget(self.kopie)
+        self.varianten_knopf = knopf("Varianten …", self.varianten)
+        self.varianten_knopf.setToolTip("Drei Fassungen derselben Mail: sachlich-knapp, persönlich, projektstark. Gleiche Fakten, gleiche Prüfung.")
+        reihe.addWidget(self.varianten_knopf)
         rechts.lage.addLayout(reihe)
         reihe2 = QHBoxLayout()
         reihe2.addWidget(label("Ergebnis festhalten:", "gedimmt"))
@@ -770,6 +818,7 @@ class EntwurfSeite(Seite):
         offen = e["status"] in ("entwurf", "freigegeben")
         self.anhang.setText(anhang_links(profil.anhaenge_des_entwurfs(self.conn, self.entwurf_id), entfernbar=offen))
         self.anhang_knopf.setEnabled(offen)
+        self.varianten_knopf.setEnabled(offen)
         self.an.setText(f"Von: {absender['name']} <{absender['email']}>\n"
                         f"Status: {STATUS_TEXT.get(e['status'], e['status'])} · Modell: {e['modell']}")
         self.empfaenger.setText(e["empfaenger"])
@@ -783,6 +832,21 @@ class EntwurfSeite(Seite):
         self.kopie.setEnabled(e["status"] != "entwurf")
         self.senden_knopf.setEnabled(e["status"] == "freigegeben")
         self._zeige_befunde(ki.pruefe_entwurf(self.conn, self.entwurf_id))
+
+    def varianten(self):
+        if self.entwurf_id is None:
+            return
+        eid, modell = self.entwurf_id, self.f.modell()
+        self.f.starte("Varianten schreiben", lambda conn, fort: ki.entwurf_varianten(conn, eid, modell, melde=fort),
+                      nach=self._varianten_zeigen)
+
+    def _varianten_zeigen(self, varianten):
+        dialog = VariantenDialog(varianten, self)
+        if dialog.exec() == QDialog.Accepted and dialog.gewaehlt is not None:
+            # Nur in den Editor: Gespeichert und freigegeben wird wie immer von dir.
+            self.text.setPlainText(dialog.gewaehlt)
+            self.gespeichert.setText("Variante übernommen – noch nicht gespeichert. Prüfen, ändern, dann „Speichern“.")
+            self.gespeichert.show()
 
     def _anhang_link(self, ziel):
         if not ziel.startswith(ENTFERNEN):
@@ -1136,6 +1200,14 @@ class SucheSeite(Seite):
             self.umkreis.addItem(f"{km} km", km)
         self.umkreis.addItem("Ganze Region", 0)
         self.umkreis.setCurrentIndex(2)
+        # Ganzes Bundesland: Ort und Umkreis ergeben sich daraus, gefiltert wird über die echte Landesgrenze.
+        self.gebiet = QComboBox()
+        self.gebiet.addItem("Umkreis um den Ort", "")
+        for name in quellen.BUNDESLAENDER:
+            self.gebiet.addItem(f"Ganz {name}", name)
+        self.gebiet.setToolTip("Sucht im ganzen Bundesland. Die km zeigen dann die Fahrstrecke ab deinem Wohnort aus dem Profil.")
+        self.gebiet.currentIndexChanged.connect(self._gebiet_gewaehlt)
+        self.land.currentIndexChanged.connect(self._land_gewaehlt)
         self.branche = QComboBox()
         self.branche.addItem("Branche aus Fakten", "")
         for code, (name, _) in quellen.BRANCHEN.items():
@@ -1144,6 +1216,7 @@ class SucheSeite(Seite):
         for code, name in suche.ARBEITSZEIT.items():
             self.arbeitszeit.addItem(name, code)
         reihe.addWidget(self.land)
+        reihe.addWidget(self.gebiet)
         reihe.addWidget(self.wo, 1)
         reihe.addWidget(self.umkreis)
         reihe.addWidget(self.branche)
@@ -1201,7 +1274,8 @@ class SucheSeite(Seite):
         ergebnis.lage.addWidget(self.hinweis)
         self.ausfaelle = label("", "hinweis", True)
         ergebnis.lage.addWidget(self.ausfaelle)
-        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status"], [50, 165, None, 95, 40, 80, 60])
+        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status"], [50, 165, None, 95, 52, 80, 60])
+        self.tab.horizontalHeaderItem(4).setToolTip("Fahrstrecke mit dem Auto. ≈ heißt Luftlinie, wenn keine Route bekannt ist.")
         self.tab.setSortingEnabled(True)
         self.tab.itemSelectionChanged.connect(self.zeige_details)
         ergebnis.lage.addWidget(self.tab, 1)
@@ -1260,6 +1334,20 @@ class SucheSeite(Seite):
         if index >= 0:
             feld.setCurrentIndex(index)
 
+    def _land_gewaehlt(self, _=None):
+        self.gebiet.setVisible(self.land.currentData() == "de")
+
+    def _gebiet_gewaehlt(self, _=None):
+        land = self.gebiet.currentData()
+        if land:
+            self.wo.setText(land)
+            self._waehle(self.umkreis, 0)
+        elif self.wo.text().strip() in quellen.BUNDESLAENDER:
+            self.wo.clear()
+            self._waehle(self.umkreis, 50)
+        self.wo.setEnabled(not land)
+        self.umkreis.setEnabled(not land)
+
     def aktualisieren(self):
         if not self.vorbelegt:
             self.vorbelegt = True
@@ -1268,6 +1356,8 @@ class SucheSeite(Seite):
             self.wo.setText(lies("ort") or suche.suchort(self.conn))
             self._waehle(self.land, lies("land", "de"))
             self._waehle(self.umkreis, int(lies("umkreis", "50")))
+            self._waehle(self.gebiet, lies("bundesland"))
+            self.gebiet.setVisible(self.land.currentData() == "de")
             self._waehle(self.branche, lies("branche"))
             self._waehle(self.arbeitszeit, lies("arbeitszeit"))
             self.searxng.setText(lies("searxng") or quellen.finde_lokale_instanz())
@@ -1292,7 +1382,7 @@ class SucheSeite(Seite):
         for t in self.treffer.values():
             t["bekannt"] = regeln.kurzname(t["firma"]).lower() in bekannt
             zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"], t["ort"],
-                           t["entfernung"] if t["entfernung"] is not None else "", t.get("quelle", ""),
+                           km_text(t), t.get("quelle", ""),
                            "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else ""))
         fuelle(self.tab, zeilen, list(self.treffer))
 
@@ -1327,7 +1417,8 @@ class SucheSeite(Seite):
                                 self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData())
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
                            ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche),
-                           ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit)):
+                           ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit),
+                           ("bundesland", self.gebiet.currentData() or "")):
             db.setze_einstellung(self.conn, f"suche.{name}", wert)
         return auftrag
 
@@ -1449,7 +1540,9 @@ class SucheSeite(Seite):
         farbe = theme.AKTUELL["akzent"]
         link = lambda url, text: f"<a style='color:{farbe}' href='{e(url, quote=True)}'>{e(text)}</a>"
         teile = [f"<b style='font-size:15px'>{e(t['firma'])}</b>", e(t["titel"])]
-        ort = " · ".join(x for x in (t["ort"], f"{t['entfernung']} km" if t["entfernung"] is not None else "") if x)
+        weg = "" if t["entfernung"] is None else (f"≈ {t['entfernung']} km Luftlinie" if t.get("luftlinie", True) else
+                                                   f"{t['entfernung']} km mit dem Auto")
+        ort = " · ".join(x for x in (t["ort"], weg) if x)
         if ort:
             teile.append(e(ort))
         teile.append(f"Quelle: {e(t.get('quelle', ''))}")
@@ -1702,6 +1795,10 @@ class ProfilSeite(Seite):
         for schluessel, text in (("name", "Name"), ("email", "Mail"), ("telefon", "Telefon"), ("ort", "Ort"), ("links", "Links")):
             self.felder[schluessel] = QLineEdit()
             form.addRow(text, self.felder[schluessel])
+        self.signatur = QPlainTextEdit()
+        self.signatur.setPlaceholderText("Mail-Signatur, z. B. Name, Rolle, Telefon, Web, GitHub. Leer: nur „Viele Grüße“ und dein Name.")
+        self.signatur.setFixedHeight(120)
+        form.addRow("Signatur", self.signatur)
         kontakt.lage.addLayout(form)
         kontakt.lage.addWidget(knopf("Speichern", self.speichern, True))
         links.addWidget(kontakt)
@@ -1752,6 +1849,7 @@ class ProfilSeite(Seite):
         for schluessel, feld in self.felder.items():
             feld.setText(daten[schluessel])
         self.vorlage.setPlainText(db.einstellung(self.conn, "vorlage", ""))
+        self.signatur.setPlainText(db.einstellung(self.conn, "mail.signatur", ""))
         self.woertlich.setChecked(db.einstellung(self.conn, "mail.modus", "ki") == "vorlage")
         self.ohne_alter.blockSignals(True)
         self.ohne_alter.setChecked(ki.ohne_alter(self.conn))
@@ -1766,6 +1864,10 @@ class ProfilSeite(Seite):
             person.speichere(self.conn, **{k: f.text() for k, f in self.felder.items()})
         except ValueError as fehler:
             return self.f.melde(str(fehler))
+        signatur = self.signatur.toPlainText().strip()
+        if regeln.ist_sensibel(signatur):
+            return self.f.melde(profil.SENSIBEL_MELDUNG)
+        db.setze_einstellung(self.conn, "mail.signatur", signatur)
         self.f.neu_laden()
 
     def vorlage_speichern(self):
@@ -2391,7 +2493,16 @@ class Hauptfenster(QMainWindow):
         kopf.addLayout(titel, 1)
         self.pill = label("", "pill")
         self.pill.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-        kopf.addWidget(self.pill)
+        pill_spalte = QVBoxLayout()
+        pill_spalte.setSpacing(4)
+        pill_spalte.addWidget(self.pill)
+        self.balken = QProgressBar()
+        self.balken.setObjectName("fortschritt")
+        self.balken.setTextVisible(False)
+        self.balken.setFixedHeight(6)
+        self.balken.hide()
+        pill_spalte.addWidget(self.balken)
+        kopf.addLayout(pill_spalte)
         self.thema_knopf = QPushButton()
         self.thema_knopf.setObjectName("themaKnopf")
         self.thema_knopf.clicked.connect(self.thema_wechseln)
@@ -2406,6 +2517,12 @@ class Hauptfenster(QMainWindow):
         self.thema_knopf.setText("☾ Dunkel" if self.hell else "☀ Hell")
         self.ring.farbe = QColor(t["akzent"])
         self.ring.update()
+        # Farbe über die Palette, nicht übers Stylesheet: Eine ::chunk-Regel im App-Stylesheet ließ Qt beim Neupolieren abstürzen.
+        palette = self.balken.palette()
+        palette.setColor(QPalette.Highlight, QColor(t["warn"]))
+        palette.setColor(QPalette.Base, QColor(t["warn_bg"]))
+        palette.setColor(QPalette.Window, QColor(t["warn_bg"]))
+        self.balken.setPalette(palette)
 
     def thema_wechseln(self):
         self.hell = not self.hell
@@ -2472,6 +2589,18 @@ class Hauptfenster(QMainWindow):
 
     def _fortschritt(self, nummer, text):
         self._setze_pill(f"{self.auftraege[nummer][0]}: {text}", True)
+        self._zeige_balken(text)
+
+    def _zeige_balken(self, text):
+        """„12 von 40“ im Fortschrittstext füllt den Balken. Ohne Zählung bleibt er weg: Der unbestimmte Modus läuft über
+        eine Stil-Animation, die beim Schließen des Fensters abstürzen kann."""
+        treffer = FORTSCHRITT.search(text or "")
+        if not treffer or int(treffer.group(2)) <= 0:
+            self.balken.hide()
+            return
+        self.balken.setRange(0, int(treffer.group(2)))
+        self.balken.setValue(min(int(treffer.group(1)), int(treffer.group(2))))
+        self.balken.show()
 
     def _fertig(self, nummer, ergebnis):
         _, nach, still = self.auftraege.pop(nummer)
@@ -2487,6 +2616,8 @@ class Hauptfenster(QMainWindow):
         self._nach_aufgabe(still)
 
     def _nach_aufgabe(self, still):
+        if not self.warteschlange:
+            self.balken.hide()
         # Eine stille Aufgabe darf die Seite nicht neu laden: Das würde die Auswahl erneut auslösen.
         if not still:
             self.neu_laden()

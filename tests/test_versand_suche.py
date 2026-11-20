@@ -455,6 +455,9 @@ def _firmen_netz(seiten=None, overpass=None, nominatim=None, overpass_code=200):
         if "nominatim" in url:
             return httpx.Response(200, json=nominatim if nominatim is not None else [
                 {"lat": "53.07", "lon": "8.80", "osm_type": "relation", "osm_id": 62559, "display_name": "Bremen"}])
+        if "router.project-osrm.org" in url:
+            ziele = anfrage.url.path.rsplit("/", 1)[-1].count(";")
+            return httpx.Response(200, json={"distances": [[0] + [1000] * ziele]})
         if "interpreter" in url:
             return httpx.Response(overpass_code, json=overpass or {"elements": []})
         if "/search" in url:
@@ -1006,6 +1009,9 @@ def _netz_mit_sitz(seite_a, plz=None):
             if code:
                 return httpx.Response(200, json=[{"lat": str(plz[code][0]), "lon": str(plz[code][1])}] if code in (plz or {}) else [])
             return httpx.Response(200, json=[bremen])
+        if "router.project-osrm.org" in url:
+            ziele = anfrage.url.path.rsplit("/", 1)[-1].count(";")
+            return httpx.Response(200, json={"distances": [[0] + [1000] * ziele]})
         if "/search" in url:
             return httpx.Response(200, json={"results": [{"url": "https://www.firma-a.de/impressum", "title": "Firma A GmbH", "content": "Software"}]})
         if url.rstrip("/").endswith("firma-a.de") and seite_a:
@@ -1936,3 +1942,119 @@ def test_verworfene_website_nimmt_auch_ihre_namen_mit(conn):
     suche.verwirf_website(conn, fid, "")
     zeile = conn.execute("SELECT personen, email, website FROM firmen WHERE id = ?", (fid,)).fetchone()
     assert tuple(zeile) == ("", "", "")
+
+
+def test_bundesland_ueber_die_grenze_und_fahrstrecke_statt_luftlinie(conn, monkeypatch):
+    quadrat = ((8.0, 52.0), (9.0, 52.0), (9.0, 53.0), (8.0, 53.0))
+    gebiet = quellen.Gebiet("Testland", "de", 52.5, 8.5, "relation", 1, (52.0, 53.0, 8.0, 9.0), (quadrat,))
+    assert quellen.liegt_im_gebiet(gebiet, 0, 52.5, 8.5) and not quellen.liegt_im_gebiet(gebiet, 0, 52.5, 9.5)
+
+    def handler(anfrage):
+        assert "router.project-osrm.org" in str(anfrage.url) and anfrage.url.params["sources"] == "0"
+        return httpx.Response(200, json={"distances": [[0, 47000, 160000]]})
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert quellen.fahrstrecken((53.08, 8.8), [(52.8, 8.4), (52.3, 8.6)], client) == [47, 160]
+    kaputt = httpx.Client(transport=httpx.MockTransport(lambda a: httpx.Response(503)))
+    assert quellen.fahrstrecken((53.08, 8.8), [(52.8, 8.4)], kaputt) == [None]
+
+    monkeypatch.setattr(quellen, "finde_gebiet", lambda ort, land, client=None: gebiet)
+    monkeypatch.setattr(quellen, "fahrstrecken", lambda start, ziele, client=None: [47, 160][:len(ziele)])
+    treffer = [{"firma": "Nah", "lat": 52.8, "lon": 8.4, "entfernung": 39},
+               {"firma": "Weit", "lat": 52.3, "lon": 8.6, "entfernung": 90},
+               {"firma": "Ohne Ort", "entfernung": None}]
+    hinweise = []
+    bleiben = suche.mit_fahrstrecke(conn, [dict(t) for t in treffer], suche.Auftrag("x", "Bremen", "de", 100), hinweise)
+    assert [t["firma"] for t in bleiben] == ["Nah", "Ohne Ort"] and bleiben[0]["entfernung"] == 47 and not bleiben[0]["luftlinie"]
+    assert any("mehr als 100 km mit dem Auto" in h for h in hinweise)
+    # Ganze Region: Grenze entscheidet, die Strecke zählt ab dem Wohnort.
+    person.speichere(conn, name="T", email="t@example.org", ort="Bremen")
+    region = suche.mit_fahrstrecke(conn, [dict(t) for t in treffer] + [{"firma": "Draußen", "lat": 52.5, "lon": 9.5}],
+                                   suche.Auftrag("x", "Testland", "de", 0), hinweise)
+    assert "Draußen" not in [t["firma"] for t in region] and "Weit" in [t["firma"] for t in region]
+
+
+def test_nur_portal_heisst_keine_mail(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    client, _ = _netz_anzeige(ANZEIGE_TEXT.replace("jolyne.donkor@wiit.cloud", "uns") +
+                              '\n\nBitte lade deine Unterlagen über den "Jetzt bewerben"-Button hoch.')
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="info@konzern.de")
+    with pytest.raises(ki.NurPortal, match="nur über das eigene Portal"):
+        ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+    # Nennt die Anzeige eine Mailadresse, bleibt die Mail erlaubt.
+    assert ki.NUR_PORTAL.search("über unser Bewerberportal") and ki.NUR_PORTAL.search("Online-Bewerbungsformular")
+    assert not ki.NUR_PORTAL.search("Bewerbung gern per Mail an jobs@firma.de")
+
+
+def test_nachfrage_nein_bleibt_offen_und_fakten_sind_fuer_sich_verstaendlich(conn):
+    import json
+    fid = firmen.lege_an(conn, "X GmbH", email="a@x.de")
+    eignung = {"score": 0, "erfuellt": [], "teilweise": [], "fehlt": ["Erfahrung mit User Stories", "Erfahrung mit Docker"],
+               "selbst": [], "cv": [], "nachweise": [], "anzeige": "", "modell": "m", "zeit": ""}
+    conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps(eignung), fid))
+    conn.commit()
+    neu = ki.ergaenze_eignung(conn, fid, {"Erfahrung mit User Stories": "nö, kann man lernen", "Erfahrung mit Docker": "ja"})
+    assert neu["fehlt"] == ["Erfahrung mit User Stories"] and neu["erfuellt"] == ["Erfahrung mit Docker"]
+    assert neu["antworten"]["Erfahrung mit User Stories"] == "nö, kann man lernen"
+    texte = [z[0] for z in conn.execute("SELECT text FROM fakten")]
+    assert "Erfahrung mit Docker (eigene Angabe)" in texts if (texts := texte) else False
+    assert "ja" not in texte and not any("lernen" in t for t in texte)
+    assert "Deine Antwort: nö, kann man lernen" in ki.eignung_text(neu)
+
+
+def test_ortsnamen_ohne_koordinaten_werden_verortet_und_gefiltert(conn, monkeypatch):
+    nrw = quellen.Gebiet("NRW", "de", 51.5, 7.5, "relation", 1, (50.3, 52.5, 5.8, 9.5),
+                         (((5.8, 50.3), (9.5, 50.3), (9.5, 52.5), (5.8, 52.5)),))
+    orte = {"Nordrhein-Westfalen": nrw, "Hamburg": quellen.Gebiet("Hamburg", "de", 53.55, 10.0),
+            "Dortmund": quellen.Gebiet("Dortmund", "de", 51.51, 7.47)}
+
+    def finde(ort, land, client=None):
+        if ort not in orte:
+            raise quellen.SucheFehler("unbekannt")
+        return orte[ort]
+    monkeypatch.setattr(quellen, "finde_gebiet", finde)
+    monkeypatch.setattr(quellen, "fahrstrecken", lambda start, ziele, client=None: [None] * len(ziele))
+    treffer = [{"firma": "HH", "ort": "Hamburg, Remote"}, {"firma": "DO", "ort": "Dortmund (Mitte)"}, {"firma": "Remote", "ort": "Remote"}]
+    hinweise = []
+    bleiben = suche.mit_fahrstrecke(conn, treffer, suche.Auftrag("x", "Nordrhein-Westfalen", "de", 0), hinweise)
+    assert [t["firma"] for t in bleiben] == ["DO", "Remote"]
+
+
+def test_mehrere_standorte_der_im_gebiet_zaehlt(conn, monkeypatch):
+    gebiet = quellen.Gebiet("Bremen", "de", 53.08, 8.8)
+    monkeypatch.setattr(quellen, "finde_gebiet", lambda ort, land, client=None: gebiet)
+    monkeypatch.setattr(quellen, "fahrstrecken", lambda start, ziele, client=None: [120] * len(ziele))
+    t = {"firma": "Versicherung", "ort": "Dortmund", "lat": 51.51, "lon": 7.47,
+         "standorte": [("Dortmund", 51.51, 7.47), ("Hamburg", 53.55, 10.0)]}
+    bleiben = suche.mit_fahrstrecke(conn, [t], suche.Auftrag("x", "Bremen", "de", 200), [])
+    assert bleiben[0]["ort"] == "Hamburg (+1 weiterer Standort)" and bleiben[0]["entfernung"] == 120
+
+
+def test_varianten_drei_fassungen_mit_pruefung_ohne_speichern(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    fid = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    eid = ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+    vorher = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
+    prompts = []
+
+    def chat(modell, system, nutzer, schema, temperatur=0.3):
+        prompts.append((system, temperatur))
+        return {"betreff": "x", "text": "Linux und Python seit 2015. Haben Sie 15 Minuten?" if len(prompts) != 2 else "Seit 1999 dabei."}
+    varianten = ki.entwurf_varianten(conn, eid, "m", chat)
+    assert [v["name"] for v in varianten] == ["Sachlich-knapp", "Persönlich", "Projektstark"]
+    assert "höchstens 90 Wörter" in prompts[0][0] and "duzen" in prompts[1][0] and prompts[0][1] == 0.7
+    assert not any(b.stufe == "sperre" for b in varianten[0]["befunde"])
+    assert any("1999" in b.text for b in varianten[1]["befunde"])  # erfundene Zahl fällt auch in der Variante auf
+    assert conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0] == vorher
+
+
+def test_signatur_aus_dem_profil_steht_unter_der_mail_und_ist_belegt(conn, tmp_path):
+    _bereit_fuer_mail(conn, tmp_path)
+    db.setze_einstellung(conn, "suche.ausschluss", "")
+    signatur = "Test Person\nSenior Developer\nTel: +49 170 555 12 34\nWeb: www.test-person.de | github.com/tp"
+    db.setze_einstellung(conn, "mail.signatur", signatur)
+    fid = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    eid = ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+    text = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
+    assert text.endswith("Viele Grüße\nTest\n\n" + signatur)
+    assert not regeln.gesperrt(ki.pruefe_entwurf(conn, eid))  # Telefon und Links der Signatur sind belegt
