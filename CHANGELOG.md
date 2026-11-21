@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.5.0 – 2026-11-21
+
+### Neu
+- **get in IT** als weiteres Portal (Schalter „Portale“, neben LinkedIn und StepStone): gefunden über die eigene SearXNG-Instanz mit `site:get-in-it.de/jobsuche`. Stelle und Firma stehen im Seitentitel. Ort, Datum (für Ampel und Altersfilter), Website der Firma und Anzeigentext liest die App aus der öffentlichen Anzeigenseite, höchstens 20 je Suche. Die interne Such-Schnittstelle von get in IT wird nicht benutzt.
+
 ## 0.4.0 – 2026-11-21
 
 ### Neu

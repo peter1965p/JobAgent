@@ -1304,7 +1304,7 @@ class SucheSeite(Seite):
         self.q_postfach = Schalter("Job-Alerts")
         self.q_postfach.setToolTip("Liest Alert-Mails von LinkedIn, Indeed, StepStone, XING, Interamt und anderen aus deinem Postfach.")
         self.q_portale = Schalter("Portale")
-        self.q_portale.setToolTip("LinkedIn und StepStone über SearXNG. Die App ruft die Portale nicht selbst ab.")
+        self.q_portale.setToolTip("LinkedIn, StepStone und get in IT über SearXNG. Bei get in IT liest die App danach die öffentliche Anzeigenseite für Ort, Datum und Website.")
         self.q_adzuna = Schalter("Adzuna")
         self.q_jooble = Schalter("Jooble")
         for feld in (self.q_postfach, self.q_portale, self.q_adzuna, self.q_jooble):

@@ -269,3 +269,34 @@ def test_uebernahme_eines_portaltreffers_ruft_weder_portal_noch_jobboerse(conn):
     fid = suche.uebernimm(conn, adzuna, client)
     assert anfragen == []
     assert "IT-Abteilung" in " ".join(z[0] for z in conn.execute("SELECT text FROM chunks WHERE firma_id = ?", (fid,)))
+
+
+def test_get_in_it_ueber_searxng_mit_ort_datum_und_website_von_der_anzeige():
+    seite = ('<html><script type="application/ld+json">' + json.dumps({
+        "@context": "https://schema.org", "@type": "JobPosting", "title": "Softwareentwickler KI (m/w/d)",
+        "datePosted": "2026-11-20T00:00:00+01:00", "description": "<p>Mit Claude Code und RAG</p>",
+        "hiringOrganization": {"@type": "Organization", "name": "Muster IT GmbH", "url": "https://www.muster-it.de/"},
+        "jobLocation": [{"@type": "Place", "address": {"addressLocality": "Bremen"}}]}) + "</script></html>")
+    anfragen = []
+
+    def handler(anfrage):
+        anfragen.append(str(anfrage.url))
+        if anfrage.url.host == "searx.test":
+            if "get-in-it" not in anfrage.url.params["q"]:
+                return httpx.Response(200, json={"results": []})
+            return httpx.Response(200, json={"results": [
+                {"url": "https://www.get-in-it.de/jobsuche/p314999?utm=x",
+                 "title": "Softwareentwickler KI (m/w/d) | Muster IT GmbH | get in IT", "content": ""},
+                {"url": "https://www.get-in-it.de/unternehmen/muster", "title": "Muster IT GmbH | get in IT", "content": ""}]})
+        if anfrage.url.path == "/jobsuche/p314999":
+            return httpx.Response(200, text=seite)
+        return httpx.Response(404)
+
+    stellen, _ = quellen.portale(["KI"], "Bremen", "de", "http://searx.test", httpx.Client(transport=httpx.MockTransport(handler)))
+    assert len(stellen) == 1
+    s = stellen[0]
+    assert (s["firma"], s["titel"], s["quelle"], s["referenz"]) == ("Muster IT GmbH", "Softwareentwickler KI (m/w/d)", "get in IT", "getinit:314999")
+    assert s["url"] == "https://www.get-in-it.de/jobsuche/p314999"
+    assert (s["ort"], s["datum"], s["website"]) == ("Bremen", "2026-11-20", "https://www.muster-it.de/")
+    assert "Claude Code" in s["beschreibung"] and "<p>" not in s["beschreibung"]
+    assert quellen.ist_portal("https://www.get-in-it.de/unternehmen/muster")

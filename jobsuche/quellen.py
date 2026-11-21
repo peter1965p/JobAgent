@@ -6,6 +6,7 @@ Nach außen gehen nur Gebiet, Branche und Suchbegriffe, nie Fakten oder Namen de
 
 import hashlib
 import html
+import json
 import math
 import re
 import time
@@ -53,7 +54,7 @@ PORTALE = re.compile(
     r"online-handelsregister|handelsregister|unternehmensregister|creditreform|google|bing|duckduckgo|companyhouse|webvalid|"
     r"firmenabc|firmenregister|implisense|dnb|kompany|wer-zu-wem|bundesanzeiger|landtag|bundestag|reddit|github|amazon|ebay|"
     r"cylex|golocal|hotfrog|infobel|yasni|werkenntdenbesten|stadtbranchenbuch|branchenbuch\w*|\w*oeffnungszeiten\w*|"
-    r"\w*branchenbuch\w*|\w*verzeichnis\w*|firmen(?:suche|info|liste|auskunft)\w*|stepstone|jooble|adzuna|kimeta|"
+    r"\w*branchenbuch\w*|\w*verzeichnis\w*|firmen(?:suche|info|liste|auskunft)\w*|stepstone|jooble|adzuna|kimeta|get-in-it|"
     r"jobs?(?:fuer|in|boerse|portal|suche|scout)\w*)\.[a-z.]+$", re.I)
 LOKALE_INSTANZ = "http://127.0.0.1:18888"
 
@@ -472,6 +473,7 @@ MAX_PORTAL_BEGRIFFE = 3  # Je Portal und Begriff eine Anfrage. Mehr bringt die S
 LINKEDIN_TITEL = re.compile(r"^(?P<titel>.+?) bei (?P<firma>.+?) — (?P<ort>.+?)(?:\s*[-|]\s*LinkedIn.*|\s*\.\.\.)?$")
 LINKEDIN_SUCHT = re.compile(r"^(?P<firma>.+?) sucht (?P<titel>.+?) in (?P<ort>.+?)\s*\|\s*LinkedIn")
 LINKEDIN_TEXT = re.compile(r"Stelle als (?P<titel>.+?) bei (?P<firma>.+?) in (?P<ort>[^.]+?)\. ")
+GETINIT_TITEL = re.compile(r"^(?P<titel>.+?)\s*\|\s*(?P<firma>[^|]+?)\s*\|\s*get in IT", re.I)
 STEPSTONE_TEXT = re.compile(r"Stellenangebot als (?P<titel>.+?) in (?:\d{5}\s+)?(?P<ort>.+?) bei der Firma (?P<firma>.+?)\.(?:\s|$)")
 
 
@@ -488,7 +490,9 @@ STELLENPORTALE = (
                   ((LINKEDIN_TITEL, "title"), (LINKEDIN_SUCHT, "title"), (LINKEDIN_TEXT, "content"))),
     Stellenportal("StepStone", "stepstone.de/stellenangebote--", re.compile(r"stepstone\.de/stellenangebote--"),
                   ((STEPSTONE_TEXT, "content"),)),
+    Stellenportal("get in IT", "get-in-it.de/jobsuche", re.compile(r"get-in-it\.de/jobsuche/p\d+"), ((GETINIT_TITEL, "title"),)),
 )
+MAX_GETINIT_SEITEN = 20  # Ort, Datum und Website stehen nur auf der Anzeigenseite selbst.
 
 
 def _portal_kennung(url: str, portal: str) -> tuple[str, str]:
@@ -500,7 +504,45 @@ def _portal_kennung(url: str, portal: str) -> tuple[str, str]:
         nummer = re.search(r"--(\d{5,})(?:-inline)?\.html", url)
         if nummer:
             return url.split("?")[0], f"stepstone:{nummer.group(1)}"
+    if portal == "get in IT":
+        nummer = re.search(r"/jobsuche/p(\d+)", url)
+        if nummer:
+            return f"https://www.get-in-it.de/jobsuche/p{nummer.group(1)}", f"getinit:{nummer.group(1)}"
     return url, f"{portal.lower()}:{hashlib.sha1(url.encode()).hexdigest()[:16]}"
+
+
+def _jobposting(text: str) -> dict:
+    """Das schema.org-JobPosting einer Anzeigenseite, sonst leer."""
+    for block in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', text, re.S):
+        try:
+            daten = json.loads(block)
+        except ValueError:
+            continue
+        for eintrag in daten if isinstance(daten, list) else [daten]:
+            if isinstance(eintrag, dict) and eintrag.get("@type") == "JobPosting":
+                return eintrag
+    return {}
+
+
+def ergaenze_aus_anzeige(stelle: dict, client: httpx.Client) -> None:
+    """Holt Ort, Datum und Website der Firma von der öffentlichen Anzeigenseite. Fehlt etwas, bleibt es leer."""
+    try:
+        antwort = client.get(stelle["url"], timeout=15)
+    except httpx.HTTPError:
+        return
+    if antwort.status_code != 200:
+        return
+    job = _jobposting(antwort.text)
+    orte = job.get("jobLocation") or []
+    orte = orte if isinstance(orte, list) else [orte]
+    adresse = next((o.get("address") for o in orte if isinstance(o, dict) and isinstance(o.get("address"), dict)), {})
+    firma = job.get("hiringOrganization") if isinstance(job.get("hiringOrganization"), dict) else {}
+    stelle["ort"] = stelle["ort"] or str(adresse.get("addressLocality", ""))[:80]
+    stelle["datum"] = datum(job.get("datePosted"))
+    website = str(firma.get("url", ""))
+    if website.startswith("http") and not ist_portal(website):
+        stelle["website"] = website
+    stelle["beschreibung"] = stelle["beschreibung"] or _ohne_tags(job.get("description"))[:20000]
 
 
 def stelle_aus_treffer(ergebnis: dict, portal: Stellenportal) -> dict | None:
@@ -513,13 +555,13 @@ def stelle_aus_treffer(ergebnis: dict, portal: Stellenportal) -> dict | None:
         if treffer and "..." not in treffer.group("firma") and len(treffer.group("firma")) >= 2:
             adresse, kennung = _portal_kennung(url, portal.name)
             return {"referenz": kennung, "firma": treffer.group("firma").strip()[:120], "titel": treffer.group("titel").strip()[:200],
-                    "beruf": "", "ort": treffer.group("ort").strip()[:80], "entfernung": None, "url": adresse, "website": "",
+                    "beruf": "", "ort": (treffer.groupdict().get("ort") or "").strip()[:80], "entfernung": None, "url": adresse, "website": "",
                     "quelle": portal.name, "beschreibung": ""}
     return None
 
 
 def portale(begriffe: list[str], ort: str, land: str, searxng: str, client: httpx.Client | None = None) -> tuple[list[dict], list[str]]:
-    """Stellen von LinkedIn und StepStone, gefunden über die eigene SearXNG-Instanz."""
+    """Stellen von LinkedIn, StepStone und get in IT, gefunden über die eigene SearXNG-Instanz."""
     basis = searxng.strip().rstrip("/")
     if not basis:
         raise SucheFehler("Für die Portalsuche fehlt die Adresse deiner SearXNG-Instanz.")
@@ -541,6 +583,8 @@ def portale(begriffe: list[str], ort: str, land: str, searxng: str, client: http
                 stelle = stelle_aus_treffer(ergebnis, portal)
                 if stelle:
                     treffer.setdefault(stelle["referenz"], stelle)
+    for stelle in [t for t in treffer.values() if t["quelle"] == "get in IT"][:MAX_GETINIT_SEITEN]:
+        ergaenze_aus_anzeige(stelle, client)
     hinweise = [f"Portale: Suchmaschinen gerade gesperrt oder überlastet ({', '.join(sorted(gesperrt))}), "
                 "es fehlen vermutlich Treffer."] if gesperrt else []
     return list(treffer.values()), hinweise
