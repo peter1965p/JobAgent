@@ -534,10 +534,15 @@ def ergaenze_aus_anzeige(stelle: dict, client: httpx.Client) -> None:
         return
     job = _jobposting(antwort.text)
     orte = job.get("jobLocation") or []
-    orte = orte if isinstance(orte, list) else [orte]
-    adresse = next((o.get("address") for o in orte if isinstance(o, dict) and isinstance(o.get("address"), dict)), {})
+    adressen = []
+    for ort in orte if isinstance(orte, list) else [orte]:
+        adresse = ort.get("address") if isinstance(ort, dict) else None
+        adressen += [a for a in (adresse if isinstance(adresse, list) else [adresse]) if isinstance(a, dict)]
+    namen = list(dict.fromkeys(str(a.get("addressLocality", "")).strip()[:80] for a in adressen if a.get("addressLocality")))
     firma = job.get("hiringOrganization") if isinstance(job.get("hiringOrganization"), dict) else {}
-    stelle["ort"] = stelle["ort"] or str(adresse.get("addressLocality", ""))[:80]
+    stelle["ort"] = stelle["ort"] or (namen[0] if namen else "")
+    if len(namen) > 1:
+        stelle["ortsnamen"] = namen  # Verortet und gewählt wird bei der Fahrstrecke: der Standort im Gebiet oder der nächste.
     stelle["datum"] = datum(job.get("datePosted"))
     website = str(firma.get("url", ""))
     if website.startswith("http") and not ist_portal(website):

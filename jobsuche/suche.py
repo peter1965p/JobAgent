@@ -650,6 +650,9 @@ def _ortsname(ort: str) -> str:
     return re.split(r"[,(/;|]| - | oder ", ort or "")[0].strip()
 
 
+MAX_STANDORTE = 8
+
+
 def _orte_verorten(conn: sqlite3.Connection, treffer: list[dict], land: str, melde=lambda _: None, client=None) -> None:
     """Portale, Alerts und Arbeitnow liefern nur einen Ortsnamen. Ohne Koordinaten griffe weder die Landesgrenze noch
     die Fahrstrecke, und eine Stelle in Hamburg stünde bei „Ganz Nordrhein-Westfalen“."""
@@ -669,6 +672,20 @@ def _orte_verorten(conn: sqlite3.Connection, treffer: list[dict], land: str, mel
         punkt = punkte.get(_ortsname(t["ort"]))
         if punkt:
             t["lat"], t["lon"] = punkt
+    # Mehrere Standorte nur als Namen (etwa bei get in IT): jeden verorten, gewählt wird danach wie bei der Jobbörse.
+    for t in treffer:
+        if t.get("standorte") or len(t.get("ortsnamen") or []) < 2:
+            continue
+        standorte = []
+        for name in t["ortsnamen"][:MAX_STANDORTE]:
+            try:
+                g = gemerktes_gebiet(conn, name, land, client)
+            except SucheFehler:
+                continue
+            standorte.append((name, g.lat, g.lon))
+        if standorte:
+            t["standorte"] = standorte
+            t["lat"], t["lon"] = standorte[0][1], standorte[0][2]
 
 
 def _passenden_standort_waehlen(treffer: list[dict], auftrag: Auftrag, gebiet, start) -> None:

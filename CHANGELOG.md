@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.5.1 – 2026-11-21
+
+### Behoben
+- get in IT: Anzeigen mit mehreren Standorten (Berlin, Hannover, Leipzig …) hatten keinen Ort. Jetzt wird jeder Standort verortet, und es zählt der im Gebiet bzw. der nächste – wie bei der Jobbörse.
+
 ## 0.5.0 – 2026-11-21
 
 ### Neu

@@ -300,3 +300,20 @@ def test_get_in_it_ueber_searxng_mit_ort_datum_und_website_von_der_anzeige():
     assert (s["ort"], s["datum"], s["website"]) == ("Bremen", "2026-11-20", "https://www.muster-it.de/")
     assert "Claude Code" in s["beschreibung"] and "<p>" not in s["beschreibung"]
     assert quellen.ist_portal("https://www.get-in-it.de/unternehmen/muster")
+
+
+def test_mehrere_standorte_von_get_in_it_waehlen_den_naechsten(conn, monkeypatch):
+    seite = ('<script type="application/ld+json">' + json.dumps({"@type": "JobPosting", "datePosted": "2026-07-06",
+             "hiringOrganization": {"name": "M GmbH", "url": "https://m.example/"},
+             "jobLocation": {"@type": "Place", "address": [{"addressLocality": "Berlin"}, {"addressLocality": "Hannover"}]}})
+             + "</script>")
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=seite)))
+    stelle = {"url": "https://www.get-in-it.de/jobsuche/p1", "ort": "", "beschreibung": ""}
+    quellen.ergaenze_aus_anzeige(stelle, client)
+    assert stelle["ort"] == "Berlin" and stelle["ortsnamen"] == ["Berlin", "Hannover"]
+    orte = {"Berlin": (52.52, 13.40), "Hannover": (52.37, 9.73), "Bremen": (53.08, 8.80)}
+    monkeypatch.setattr(suche, "gemerktes_gebiet", lambda c, name, land, client=None: quellen.Gebiet(name, "de", *orte[name]))
+    monkeypatch.setattr(quellen, "fahrstrecken", lambda start, ziele, client=None: [None] * len(ziele))
+    t = dict(stelle, firma="M GmbH", titel="x", quelle="get in IT", entfernung=None)
+    suche.mit_fahrstrecke(conn, [t], suche.Auftrag("x", "Bremen", umkreis=300), [], client=client)
+    assert t["ort"].startswith("Hannover (+1 weiterer Standort)")
