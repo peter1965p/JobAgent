@@ -684,7 +684,12 @@ ENTFERNEN = "entfernen:"
 FORTSCHRITT = re.compile(r"(\d+)\s+von\s+(\d+)")
 
 
+SPALTE_ORT = 3
 SPALTE_ALTER = 8
+
+
+def remote_text(t: dict) -> str:
+    return t["remote"] + (" – geht von überall, unabhängig vom Gebiet" if t.get("fern") else "")
 AMPEL = {"gruen": "#39ff14", "gelb": "#ffc400", "rot": "#ff3b30"}
 
 
@@ -1281,6 +1286,14 @@ class SucheSeite(Seite):
         self.aufgefrischte.setToolTip("An: Eine alte Anzeige bleibt, wenn die Firma sie in dieser Zeit bearbeitet hat. "
                                       "In den Details steht dann, seit wann sie online ist. Aus: Es zählt nur die erste Veröffentlichung.")
         reihe.addWidget(self.aufgefrischte)
+        self.remote = QComboBox()
+        for code, name in suche.REMOTE.items():
+            self.remote.addItem(name, code)
+        self.remote.setToolTip("Remote markieren: 🏠 in der Spalte Ort, wenn die Anzeige Remote oder Homeoffice nennt.\n"
+                               "+ Remote bundesweit: dazu Jobbörsen-Stellen aus ganz Deutschland, die ganz aus der Ferne gehen "
+                               f"(mindestens {suche.VOLL_REMOTE_PROZENT} % Homeoffice oder „100 % remote“). Sie bleiben trotz Gebiet und Umkreis drin.\n"
+                               "nur Remote/Homeoffice: nur Stellen, die Remote oder Homeoffice nennen.")
+        reihe.addWidget(self.remote)
         karte.lage.addLayout(reihe)
         reihe_quellen = QHBoxLayout()
         self.q_verzeichnis = Schalter("Firmenverzeichnis")
@@ -1437,6 +1450,7 @@ class SucheSeite(Seite):
             self.nur_ki.setChecked(lies("nur_ki") == "1")
             self.max_tage.setValue(int(lies("max_tage", str(suche.MAX_TAGE)) or 0))
             self.aufgefrischte.setChecked(lies("aufgefrischte", "1") == "1")
+            self._waehle(self.remote, lies("remote"))
             self._internet_moeglich()
         if not self.ausschluss.hasFocus():
             self.ausschluss.setText(db.einstellung(self.conn, "suche.ausschluss", ""))
@@ -1449,7 +1463,8 @@ class SucheSeite(Seite):
         zeilen = []
         for t in self.treffer.values():
             t["bekannt"] = regeln.kurzname(t["firma"]).lower() in bekannt
-            zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"], t["ort"],
+            zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"],
+                           ("🏠 " if t.get("remote") else "") + t["ort"],
                            km_text(t), t.get("quelle", ""),
                            "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
                            ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", ""))))
@@ -1462,6 +1477,8 @@ class SucheSeite(Seite):
             if farbe:
                 item.setData(Qt.DecorationRole, QColor(farbe))
                 item.setToolTip(suche.alter_text(t))
+            if t.get("remote"):
+                self.tab.item(r, SPALTE_ORT).setToolTip(remote_text(t))
 
     def _stellenquellen(self):
         return (("postfach", self.q_postfach), ("portale", self.q_portale), ("adzuna", self.q_adzuna), ("jooble", self.q_jooble))
@@ -1493,12 +1510,13 @@ class SucheSeite(Seite):
         auftrag = suche.Auftrag(self.was.text(), self.wo.text().strip(), self.land.currentData(), self.umkreis.currentData(),
                                 self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData(),
                                 self.nur_ki.isChecked(), self.max_tage.value(),
-                                self.aufgefrischte.isChecked())
+                                self.aufgefrischte.isChecked(), self.remote.currentData() or "")
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
                            ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche),
                            ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit),
                            ("bundesland", self.gebiet.currentData() or ""), ("nur_ki", "1" if auftrag.nur_ki else "0"),
-                           ("max_tage", str(auftrag.max_tage)), ("aufgefrischte", "1" if auftrag.aufgefrischte else "0")):
+                           ("max_tage", str(auftrag.max_tage)), ("aufgefrischte", "1" if auftrag.aufgefrischte else "0"),
+                           ("remote", auftrag.remote)):
             db.setze_einstellung(self.conn, f"suche.{name}", wert)
         return auftrag
 
@@ -1629,6 +1647,8 @@ class SucheSeite(Seite):
         alter = suche.alter_text(t)
         if alter:
             teile.append(e(alter[0].upper() + alter[1:]))
+        if t.get("remote"):
+            teile.append(f"<b>🏠 {e(remote_text(t))}</b>")
         if t.get("ki"):
             teile.append(f"<b>KI in der Anzeige:</b> {e(', '.join(t['ki']))}")
         konzern = (v or {}).get("konzern") or t.get("konzern", "")

@@ -2,6 +2,14 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.6.0 – 2026-11-21
+
+### Neu
+- **Remote** in der Suche (Auswahl neben „Aufgefrischte behalten“, gilt auch nachts):
+  - *Remote markieren* (Standard): 🏠 in der Spalte Ort, wenn die Anzeige Remote oder Homeoffice nennt; Tooltip und Details zeigen, wie viel („Homeoffice 40 %“, „nach Vereinbarung“, „Remote“). Bei der Jobbörse aus ihren Angaben zum Homeoffice, sonst aus Ort, Titel und Text.
+  - *+ Remote bundesweit*: dazu Jobbörsen-Stellen aus ganz Deutschland, die ganz aus der Ferne gehen (ab 80 % Homeoffice oder „100 % remote“). Sie bleiben trotz Gebiet und Umkreis in der Liste.
+  - *nur Remote/Homeoffice*: nur Stellen mit 🏠.
+
 ## 0.5.2 – 2026-11-21
 
 ### Behoben

@@ -2204,3 +2204,46 @@ def test_eintrittsdatum_ist_erlaubt_wenn_die_anzeige_danach_fragt(conn, tmp_path
     b2, t2 = conn.execute("SELECT betreff, text FROM entwuerfe WHERE id = ?", (eid2,)).fetchone()
     ki.speichere_text(conn, eid2, b2, t2 + "\n\nIch kann ab 01.12.2099 anfangen.")
     assert any("Zahl ohne Beleg" in b.text for b in ki.pruefe_entwurf(conn, eid2))
+
+
+def test_remote_kennzeichen_aus_jobboerse_und_text():
+    assert suche.homeoffice({"homeofficemoeglich": False}) == ("", False)
+    assert suche.homeoffice({"homeofficemoeglich": True, "homeofficetyp": "NACH_VEREINBARUNG"}) == ("Homeoffice nach Vereinbarung", False)
+    assert suche.homeoffice({"homeofficemoeglich": True, "homeofficeprozent": 40}) == ("Homeoffice 40 %", False)
+    assert suche.homeoffice({"homeofficemoeglich": True, "homeofficeprozent": 80}) == ("Homeoffice 80 %", True)
+    assert suche.homeoffice({"homeofficemoeglich": True, "homeofficeprozent": 100}) == ("Remote", True)
+    assert quellen.remote_aus_text("Remote", "") == ("Remote", True)
+    assert quellen.remote_aus_text("Berlin", "Admin (100 % remote)") == ("Remote", True)
+    assert quellen.remote_aus_text("Hamburg, Homeoffice", "") == ("Remote/Homeoffice teilweise", False)
+    assert quellen.remote_aus_text("Hamburg", "Systemadministrator") == ("", False)
+
+
+def test_remote_bundesweit_und_nur_remote(conn, monkeypatch):
+    def boerse(begriffe, wo, umkreis=50, client=None, arbeitszeit="", max_tage=0, seiten=1, groesse=50):
+        if groesse == 100:  # die bundesweite Remote-Abfrage
+            assert wo == "Deutschland" and seiten == suche.REMOTE_SEITEN
+            return [{"referenz": "F1", "firma": "Fern GmbH", "titel": "Admin", "ort": "München", "quelle": "Jobbörse",
+                     "website": "", "remote": "Remote", "fern": True},
+                    {"referenz": "F2", "firma": "Halb GmbH", "titel": "Admin", "ort": "Köln", "quelle": "Jobbörse",
+                     "website": "", "remote": "Homeoffice 40 %", "fern": False}]
+        return [{"referenz": "L1", "firma": "Nah GmbH", "titel": "Admin", "ort": "Bremen", "quelle": "Jobbörse",
+                 "website": "", "remote": "", "fern": False}]
+    monkeypatch.setattr(suche, "suche", boerse)
+    monkeypatch.setattr(suche, "bewerte_naehe", lambda conn, t: t)
+    auftrag = lambda remote: suche.Auftrag("Admin", "", "de", 50, "", ("jobboerse",), "", "", False, 0, True, remote)
+    firmen_von = lambda remote: sorted(t["firma"] for t in suche.suche_ueberall(conn, auftrag(remote))["treffer"])
+    assert firmen_von("") == ["Nah GmbH"]
+    assert firmen_von("bundesweit") == ["Fern GmbH", "Nah GmbH"]  # nur ganz aus der Ferne, Köln mit 40 % nicht
+    assert firmen_von("nur") == ["Fern GmbH"]
+
+
+def test_remote_stellen_bleiben_trotz_gebiet(conn, monkeypatch):
+    treffer = [{"firma": "Fern", "lat": 48.1, "lon": 11.6, "fern": True, "entfernung": None},
+               {"firma": "Weit", "lat": 48.1, "lon": 11.6, "fern": False, "entfernung": None}]
+    monkeypatch.setattr(suche, "_orte_verorten", lambda *a, **k: None)
+    monkeypatch.setattr(suche, "_startpunkt", lambda conn, auftrag, client: ((53.08, 8.8), None))
+    monkeypatch.setattr(suche, "_passenden_standort_waehlen", lambda *a: None)
+    monkeypatch.setattr(quellen, "fahrstrecken", lambda start, ziele, client=None: [600 for _ in ziele])
+    hinweise = []
+    bleiben = suche.mit_fahrstrecke(conn, treffer, suche.Auftrag("Admin", "Bremen", umkreis=50), hinweise)
+    assert [t["firma"] for t in bleiben] == ["Fern"] and bleiben[0]["entfernung"] == 600

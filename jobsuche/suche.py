@@ -27,6 +27,9 @@ VERMITTLER = re.compile(r"personal\s*(?:vermittlung|dienst|service|beratung|leas
                         r"personalvermittl|recruiting|headhunt", re.I)
 ARBEITSZEIT = {"": "Voll- und Teilzeit", "vollzeit": "Vollzeit", "teilzeit": "Teilzeit"}
 ARBEITSZEIT_CODE = {"vollzeit": "vz", "teilzeit": "tz"}
+REMOTE = {"": "Remote markieren", "bundesweit": "+ Remote bundesweit", "nur": "nur Remote/Homeoffice"}
+VOLL_REMOTE_PROZENT = 80  # ab so viel Homeoffice zählt eine Stelle als „von überall“
+REMOTE_SEITEN = 3  # Seiten à 100 Anzeigen je Suchwort für die bundesweite Remote-Suche
 ANZEIGE = "https://www.arbeitsagentur.de/jobsuche/jobdetail/{}"
 ANZEIGEN_SUCHE = API  # Eigener Name, damit Tests diese Abfragen getrennt umleiten können.
 DETAILS = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/{}"
@@ -38,8 +41,18 @@ def _arbeitszeit(stelle: dict) -> str:
     return ", ".join(name for name, gilt in (("Vollzeit", stelle.get("arbeitszeitVollzeit")), ("Teilzeit", teilzeit)) if gilt)
 
 
+def homeoffice(stelle: dict) -> tuple[str, bool]:
+    """Was die Jobbörse zum Homeoffice sagt: (Kennzeichen, ganz aus der Ferne)."""
+    if not stelle.get("homeofficemoeglich"):
+        return "", False
+    prozent = stelle.get("homeofficeprozent")
+    if isinstance(prozent, (int, float)) and prozent > 0:
+        return ("Remote" if prozent >= 100 else f"Homeoffice {int(prozent)} %"), prozent >= VOLL_REMOTE_PROZENT
+    return "Homeoffice nach Vereinbarung", False
+
+
 def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None = None, arbeitszeit: str = "",
-          max_tage: int = 0) -> list[dict]:
+          max_tage: int = 0, seiten: int = 1, groesse: int = 50) -> list[dict]:
     """`begriffe` darf mehrere Suchwörter enthalten, durch Kommas getrennt. `max_tage` 0 heißt: jedes Alter."""
     woerter = [b.strip() for b in begriffe.split(",") if b.strip()]
     if not woerter or not wo.strip():
@@ -50,11 +63,11 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
     if max_tage:
         # Die Börse filtert nach dem aktuellen Zeitraum. Aufgefrischte alte Anzeigen fängt danach `zu_alt` ab.
         filter_zeit["veroeffentlichtseit"] = min(max_tage, 100)
-    for wort in woerter:
+    for wort, seite in ((w, s) for w in woerter for s in range(1, seiten + 1)):
         try:
             antwort = client.get(API, headers={"X-API-Key": API_SCHLUESSEL}, params={
-                "was": wort, "wo": wo.strip(), "umkreis": umkreis, "size": 50, "page": 1, "angebotsart": 1, "pav": "false", "zeitarbeit": "false",
-                **filter_zeit,
+                "was": wort, "wo": wo.strip(), "umkreis": umkreis, "size": groesse, "page": seite, "angebotsart": 1, "pav": "false",
+                "zeitarbeit": "false", **filter_zeit,
             })
         except httpx.HTTPError as fehler:
             raise SucheFehler(f"Die Jobbörse ist nicht erreichbar: {fehler}") from fehler
@@ -84,6 +97,7 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
                                        or (stelle.get("veroeffentlichungszeitraum") or {}).get("von")),
                 "bearbeitet": quellen.datum(stelle.get("aenderungsdatum")),
             }
+            treffer[referenz]["remote"], treffer[referenz]["fern"] = homeoffice(stelle)
     return list(treffer.values())
 
 
@@ -319,6 +333,7 @@ class Auftrag:
     nur_ki: bool = False  # nur Stellen, deren Anzeige KI-Arbeit ausdrücklich nennt
     max_tage: int = MAX_TAGE  # Anzeigen, die länger online sind, fallen raus. 0: jedes Alter
     aufgefrischte: bool = True  # alte Anzeigen behalten, die in dieser Zeit bearbeitet wurden
+    remote: str = ""  # "": nur markieren, "bundesweit": Remote-Stellen von überall dazu, "nur": nur Remote/Homeoffice
 
 
 def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
@@ -327,7 +342,8 @@ def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
     gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q)
     return Auftrag(lies("begriffe"), lies("ort") or suchort(conn), lies("land", "de"), int(lies("umkreis", "50")),
                    lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"), lies("nur_ki") == "1",
-                   int(lies("max_tage", str(MAX_TAGE)) or 0), lies("aufgefrischte", "1") == "1")
+                   int(lies("max_tage", str(MAX_TAGE)) or 0), lies("aufgefrischte", "1") == "1",
+                   lies("remote") if lies("remote") in REMOTE else "")
 
 
 def _gleich(treffer: dict) -> str:
@@ -344,6 +360,8 @@ def _vereine(listen: list[list[dict]]) -> list[dict]:
         if VERMITTLER.search(treffer["firma"]):
             continue
         vorhanden = ergebnis.get(_gleich(treffer))
+        if vorhanden and treffer.get("fern") and not vorhanden.get("fern"):
+            vorhanden["remote"], vorhanden["fern"] = treffer["remote"], True
         if not vorhanden:
             ergebnis[_gleich(treffer)] = treffer
         elif treffer["quelle"] not in vorhanden["quelle"]:
@@ -496,6 +514,10 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
             # Die Jobbörse kennt keine Regionen, 200 km ist ihr größter Umkreis.
             quelle("Jobbörse", lambda: suche(auftrag.begriffe, auftrag.ort or "Deutschland", auftrag.umkreis or 200, client, auftrag.arbeitszeit,
                                                auftrag.max_tage))
+    if auftrag.remote and "jobboerse" in auftrag.quellen and begriffe and auftrag.land == "de":
+        # Die Börse filtert nicht nach Homeoffice: bundesweit holen und nur behalten, was ganz aus der Ferne geht.
+        quelle("Jobbörse Remote", lambda: [{**t, "quelle": "Jobbörse (Remote)"} for t in suche(
+            auftrag.begriffe, "Deutschland", 200, client, auftrag.arbeitszeit, auftrag.max_tage, REMOTE_SEITEN, 100) if t["fern"]])
     if begriffe and "arbeitnow" in auftrag.quellen:
         quelle("Arbeitnow", lambda: quellen.stellenportal(begriffe, auftrag.ort, client, auftrag.arbeitszeit))
 
@@ -539,6 +561,11 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         if sum(map(len, listen)) < vorher:
             hinweise.append(f"Zu alt: {vorher - sum(map(len, listen))} Anzeigen sind länger als {auftrag.max_tage} Tage online.")
     treffer = _vereine(listen)
+    for t in treffer:
+        # Verzeichnis und Internet liefern Firmen, keine Stellen: dort gibt es nichts zu Remote.
+        if "remote" not in t and not str(t.get("referenz", "")).startswith(("osm:", "web:")):
+            t["remote"], t["fern"] = quellen.remote_aus_text(
+                t.get("ort", ""), " ".join(str(t.get(f, "")) for f in ("titel", "beschreibung", "schnipsel")))
     woerter = ki.ausschlusswoerter(conn)
     if woerter:
         vorher = len(treffer)
@@ -546,6 +573,10 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         if len(treffer) < vorher:
             hinweise.append(f"Ausgeschlossen: {vorher - len(treffer)} Treffer mit {', '.join(woerter)}.")
     treffer = mit_fahrstrecke(conn, treffer, auftrag, hinweise, melde, client)
+    if auftrag.remote == "nur":
+        vorher = len(treffer)
+        treffer = [t for t in treffer if t.get("remote")]
+        hinweise.append(f"Remote: {len(treffer)} von {vorher} Stellen bieten Remote oder Homeoffice.")
     if auftrag.nur_ki:
         vorher = len(treffer)
         treffer = [t for t in mit_ki_signalen(conn, treffer, melde, client) if t.get("ki")]
@@ -724,7 +755,7 @@ def mit_fahrstrecke(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auft
     start, gebiet = _startpunkt(conn, auftrag, client)
     _passenden_standort_waehlen(mit_ort, auftrag, gebiet, start)
     if not auftrag.umkreis and gebiet and (gebiet.flaeche or gebiet.bbox):
-        draussen = [t for t in mit_ort if not quellen.liegt_im_gebiet(gebiet, 0, t["lat"], t["lon"])]
+        draussen = [t for t in mit_ort if not t.get("fern") and not quellen.liegt_im_gebiet(gebiet, 0, t["lat"], t["lon"])]
         if draussen:
             weg = {id(t) for t in draussen}
             treffer = [t for t in treffer if id(t) not in weg]
@@ -754,7 +785,7 @@ def mit_fahrstrecke(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auft
         if any(km is None for km in strecken):
             hinweise.append("Fahrstrecke: Der Routendienst war nicht für alle Treffer erreichbar, dort steht die Luftlinie (≈).")
     if auftrag.umkreis:
-        zu_weit = [t for t in mit_ort if not t.get("luftlinie") and t["entfernung"] > auftrag.umkreis]
+        zu_weit = [t for t in mit_ort if not t.get("fern") and not t.get("luftlinie") and t["entfernung"] > auftrag.umkreis]
         if zu_weit:
             weg = {id(t) for t in zu_weit}
             treffer = [t for t in treffer if id(t) not in weg]

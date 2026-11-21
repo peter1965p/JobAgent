@@ -329,6 +329,7 @@ def stellenportal(begriffe: list[str], ort: str, client: httpx.Client | None = N
             "referenz": f"arbeitnow:{stelle.get('slug', '')}", "firma": firma, "titel": titel, "beruf": "", "ort": lage,
             "entfernung": None, "url": str(stelle.get("url", "")), "website": "", "quelle": "Arbeitnow",
             "beschreibung": str(stelle.get("description", ""))[:20000], "datum": datum(stelle.get("created_at")),
+            **({"remote": "Remote", "fern": True} if stelle.get("remote") else {}),
         })
     return treffer
 
@@ -443,6 +444,19 @@ def name_passt(firma: str, seitentext: str) -> bool:
 # --- Orte aus Stellenangaben ------------------------------------------------------------------------------------------
 
 FERN = re.compile(r"(?i)\b(?:remote|home\s*-?office|mobiles? arbeiten|deutschlandweit|bundesweit|ortsunabhängig|100\s*%\s*remote)\b")
+# Ganz aus der Ferne, also unabhängig vom Wohnort: nicht nur „Homeoffice nach Absprache“.
+FERN_VOLL = re.compile(r"(?i)100\s*%\s*(?:remote|home\s*-?office)|\bfull[- ]?remote\b|\bfully remote\b|\bvollständig remote\b|"
+                       r"\bremote[- ]first\b|\bortsunabhängig\b|\bremote[- ]only\b|\bnur remote\b")
+ORT_FERN = re.compile(r"(?i)^\W*(?:remote|home\s*-?office|bundesweit|deutschlandweit|ortsunabhängig)(?:\W+(?:deutschland|germany|de))?\W*$")
+
+
+def remote_aus_text(ort: str, text: str) -> tuple[str, bool]:
+    """(Kennzeichen, ganz aus der Ferne). „“ heißt: nichts zu Remote bekannt."""
+    if ORT_FERN.match(ort or "") or FERN_VOLL.search(f"{ort} {text}"):
+        return "Remote", True
+    if FERN.search(f"{ort} {text}"):
+        return "Remote/Homeoffice teilweise", False
+    return "", False
 
 
 def ortsname(text: str) -> str:
