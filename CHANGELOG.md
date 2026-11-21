@@ -2,6 +2,13 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.4.0 – 2026-11-21
+
+### Neu
+- **Alter der Anzeigen:** In der Suche „höchstens 15 Tage alt“ (einstellbar von 1 bis 100, 0 = jedes Alter). Ältere Anzeigen fallen raus, der Hinweis nennt, wie viele. Die Jobbörse filtert schon bei der Abfrage, Arbeitnow, Adzuna und Jooble über ihr Datum. Quellen ohne Datum (Verzeichnis, Internet, Alerts, Portale) bleiben ungefiltert.
+- **„Aufgefrischte behalten“:** Eine alte Anzeige, die die Firma in dieser Zeit bearbeitet hat, bleibt. In den Details steht dann zum Beispiel „Online seit 37 Tagen, zuletzt bearbeitet vor 15 Tagen“. Ist der Schalter aus, zählt streng die erste Veröffentlichung.
+- **Ampel-Spalte „Alter“** in den Treffern: grün unter 15 Tagen, gelb ab 15, rot ab 30 – gezählt ab der ersten Veröffentlichung. Die Zahl ist sortierbar, der Tooltip nennt auch die letzte Bearbeitung.
+
 ## 0.3.1 – 2026-11-21
 
 ### Behoben

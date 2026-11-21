@@ -16,7 +16,7 @@ from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QI
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTabWidget, QTableWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -684,6 +684,10 @@ ENTFERNEN = "entfernen:"
 FORTSCHRITT = re.compile(r"(\d+)\s+von\s+(\d+)")
 
 
+SPALTE_ALTER = 8
+AMPEL = {"gruen": "#39ff14", "gelb": "#ffc400", "rot": "#ff3b30"}
+
+
 def km_text(t: dict):
     """Zahl für die Tabelle, damit sie sortierbar bleibt; Luftlinie mit ≈ davor."""
     if t.get("entfernung") is None:
@@ -1262,6 +1266,21 @@ class SucheSeite(Seite):
         reihe.addWidget(self.umkreis)
         reihe.addWidget(self.branche)
         reihe.addWidget(self.arbeitszeit)
+        self.max_tage = QSpinBox()
+        self.max_tage.setRange(0, 100)
+        self.max_tage.setValue(suche.MAX_TAGE)
+        self.max_tage.setPrefix("höchstens ")
+        self.max_tage.setSuffix(" Tage alt")
+        self.max_tage.setSpecialValueText("jedes Alter")
+        self.max_tage.setToolTip("Anzeigen, die länger online sind, fallen raus. Es zählt die erste Veröffentlichung: "
+                                 "Eine alte Anzeige, die nur aufgefrischt wurde, bleibt alt. 0: jedes Alter. "
+                                 "Quellen ohne Datum (Verzeichnis, Internet, Alerts, Portale) filtert das nicht.")
+        reihe.addWidget(self.max_tage)
+        self.aufgefrischte = Schalter("Aufgefrischte behalten")
+        self.aufgefrischte.setChecked(True)
+        self.aufgefrischte.setToolTip("An: Eine alte Anzeige bleibt, wenn die Firma sie in dieser Zeit bearbeitet hat. "
+                                      "In den Details steht dann, seit wann sie online ist. Aus: Es zählt nur die erste Veröffentlichung.")
+        reihe.addWidget(self.aufgefrischte)
         karte.lage.addLayout(reihe)
         reihe_quellen = QHBoxLayout()
         self.q_verzeichnis = Schalter("Firmenverzeichnis")
@@ -1319,7 +1338,8 @@ class SucheSeite(Seite):
         ergebnis.lage.addWidget(self.hinweis)
         self.ausfaelle = label("", "hinweis", True)
         ergebnis.lage.addWidget(self.ausfaelle)
-        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI"], [50, 165, None, 95, 52, 80, 60, 110])
+        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI", "Alter"],
+                           [50, 165, None, 95, 52, 80, 60, 110, 62])
         self.tab.horizontalHeaderItem(4).setToolTip("Fahrstrecke mit dem Auto. ≈ heißt Luftlinie, wenn keine Route bekannt ist.")
         self.tab.setSortingEnabled(True)
         self.tab.itemSelectionChanged.connect(self.zeige_details)
@@ -1415,6 +1435,8 @@ class SucheSeite(Seite):
                 feld.setChecked(name in gewaehlt)
             self.stichwoerter.setText(lies("stichwoerter"))
             self.nur_ki.setChecked(lies("nur_ki") == "1")
+            self.max_tage.setValue(int(lies("max_tage", str(suche.MAX_TAGE)) or 0))
+            self.aufgefrischte.setChecked(lies("aufgefrischte", "1") == "1")
             self._internet_moeglich()
         if not self.ausschluss.hasFocus():
             self.ausschluss.setText(db.einstellung(self.conn, "suche.ausschluss", ""))
@@ -1430,8 +1452,16 @@ class SucheSeite(Seite):
             zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"], t["ort"],
                            km_text(t), t.get("quelle", ""),
                            "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
-                           ", ".join(t.get("ki") or [])))
+                           ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", ""))))
         fuelle(self.tab, zeilen, list(self.treffer))
+        # Ampel: Wie lange ist die Anzeige schon draußen? Die Zahl bleibt sortierbar, der Punkt davor zeigt die Farbe.
+        for r in range(self.tab.rowCount()):
+            item = self.tab.item(r, SPALTE_ALTER)
+            t = self.treffer.get(item.data(Qt.UserRole), {})
+            farbe = AMPEL.get(suche.ampel(t))
+            if farbe:
+                item.setData(Qt.DecorationRole, QColor(farbe))
+                item.setToolTip(suche.alter_text(t))
 
     def _stellenquellen(self):
         return (("postfach", self.q_postfach), ("portale", self.q_portale), ("adzuna", self.q_adzuna), ("jooble", self.q_jooble))
@@ -1462,11 +1492,13 @@ class SucheSeite(Seite):
                                                  *self._stellenquellen()) if feld.isChecked())
         auftrag = suche.Auftrag(self.was.text(), self.wo.text().strip(), self.land.currentData(), self.umkreis.currentData(),
                                 self.branche.currentData(), gewaehlt, self.searxng.text().strip(), self.arbeitszeit.currentData(),
-                                self.nur_ki.isChecked())
+                                self.nur_ki.isChecked(), self.max_tage.value(),
+                                self.aufgefrischte.isChecked())
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
                            ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche),
                            ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit),
-                           ("bundesland", self.gebiet.currentData() or ""), ("nur_ki", "1" if auftrag.nur_ki else "0")):
+                           ("bundesland", self.gebiet.currentData() or ""), ("nur_ki", "1" if auftrag.nur_ki else "0"),
+                           ("max_tage", str(auftrag.max_tage)), ("aufgefrischte", "1" if auftrag.aufgefrischte else "0")):
             db.setze_einstellung(self.conn, f"suche.{name}", wert)
         return auftrag
 
@@ -1594,6 +1626,9 @@ class SucheSeite(Seite):
         if ort:
             teile.append(e(ort))
         teile.append(f"Quelle: {e(t.get('quelle', ''))}")
+        alter = suche.alter_text(t)
+        if alter:
+            teile.append(e(alter[0].upper() + alter[1:]))
         if t.get("ki"):
             teile.append(f"<b>KI in der Anzeige:</b> {e(', '.join(t['ki']))}")
         konzern = (v or {}).get("konzern") or t.get("konzern", "")

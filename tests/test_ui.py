@@ -351,7 +351,7 @@ def test_suche_seite_zeigt_treffer_und_uebernimmt(app, f, monkeypatch):
     from jobsuche import suche
     stelle = {"referenz": "R1", "firma": "NewTec GmbH", "titel": "KI-Entwickler", "beruf": "x", "ort": "Bremen",
               "entfernung": 9, "url": "https://example.org/R1"}
-    monkeypatch.setattr(suche, "suche", lambda was, wo, km, client=None, arbeitszeit="": [stelle])
+    monkeypatch.setattr(suche, "suche", lambda was, wo, km, client=None, arbeitszeit="", max_tage=0: [stelle])
     # Ohne Netz: Übernehmen lädt sonst die Anzeige und die Stellenseite und hängt an der Leitung.
     monkeypatch.setattr(suche, "anzeigentext", lambda stelle, client=None: "")
     monkeypatch.setattr(suche, "speichere_stellenseite", lambda *a, **k: None)
@@ -761,3 +761,16 @@ def test_entwurf_loeschen_verwirft_und_gesendete_bleiben(app, f):
     f.conn.commit()
     with pytest.raises(ki.NichtMoeglich):
         ki.verwirf_entwurf(f.conn, eid)
+
+
+def test_ampel_spalte_zeigt_alter_mit_farbe(app, f):
+    from datetime import date, timedelta
+    f.zeige_seite(fenster.SucheSeite)
+    s = f.stapel.currentWidget()
+    alt = (date.today() - timedelta(days=40)).isoformat()
+    s.treffer = {"R": {"referenz": "R", "firma": "A GmbH", "titel": "x", "ort": "", "entfernung": None, "naehe": None,
+                       "quelle": "Jobbörse", "datum": alt, "bearbeitet": (date.today() - timedelta(days=15)).isoformat()}}
+    s._zeige()
+    item = s.tab.item(0, fenster.SPALTE_ALTER)
+    assert item.data(fenster.Qt.DisplayRole) == 40 and item.data(fenster.Qt.DecorationRole).name() == fenster.AMPEL["rot"]
+    assert "zuletzt bearbeitet vor 15 Tagen" in item.toolTip()

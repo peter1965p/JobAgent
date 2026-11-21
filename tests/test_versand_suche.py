@@ -2135,3 +2135,50 @@ def test_menuepunkt_unter_geschaeftsfuehrung_ist_kein_name():
     menue = "Unternehmen\nZurück\nÜbersicht\nProfil\nGeschäftsführung\nTrack Record\nAwards\nKarriere"
     assert firmen.lies_kontakt(menue)["personen"] == ""
     assert firmen.lies_kontakt("Geschäftsführung: Ralf Koenzen")["personen"] == "Ralf Koenzen"
+
+
+def test_alte_anzeigen_fallen_raus_auch_wenn_sie_aufgefrischt_wurden(conn):
+    from datetime import date, timedelta
+    heute = date.today()
+    tage = lambda n: (heute - timedelta(days=n)).isoformat()
+    antwort = {"ergebnisliste": [
+        {"referenznummer": "ALT", "firma": "Alt GmbH", "stellenangebotsTitel": "Admin",
+         "datumErsteVeroeffentlichung": tage(40), "aenderungsdatum": tage(15) + "T07:39:35.531",
+         "veroeffentlichungszeitraum": {"von": tage(15)}},
+        {"referenznummer": "NEU", "firma": "Neu GmbH", "stellenangebotsTitel": "Admin", "datumErsteVeroeffentlichung": tage(3)},
+        {"referenznummer": "OHNE", "firma": "Ohne GmbH", "stellenangebotsTitel": "Admin"},
+    ]}
+    client, anfragen = _api(antwort)
+    ergebnis = suche.suche_ueberall(conn, suche.Auftrag("Admin", "Bremen", quellen=("jobboerse",), aufgefrischte=False), client=client)
+    assert sorted(t["firma"] for t in ergebnis["treffer"]) == ["Neu GmbH", "Ohne GmbH"]
+    client, _ = _api(antwort)
+    mit = suche.suche_ueberall(conn, suche.Auftrag("Admin", "Bremen", quellen=("jobboerse",)), client=client)
+    assert sorted(t["firma"] for t in mit["treffer"]) == ["Alt GmbH", "Neu GmbH", "Ohne GmbH"]
+    assert suche.zu_alt({"datum": tage(40), "bearbeitet": tage(20)}, 15)
+    assert anfragen[0].url.params["veroeffentlichtseit"] == "15"
+    assert any("Zu alt: 1 Anzeigen" in h for h in ergebnis["hinweise"])
+    client, anfragen = _api(antwort)
+    alle = suche.suche_ueberall(conn, suche.Auftrag("Admin", "Bremen", quellen=("jobboerse",), max_tage=0), client=client)
+    assert len(alle["treffer"]) == 3 and "veroeffentlichtseit" not in anfragen[0].url.params
+    alt = next(t for t in alle["treffer"] if t["firma"] == "Alt GmbH")
+    assert suche.alter_text(alt) == "online seit 40 Tagen, zuletzt bearbeitet vor 15 Tagen"
+    assert suche.alter_text({"datum": tage(1), "bearbeitet": tage(1)}) == "seit gestern online"
+
+
+def test_datum_aus_den_anderen_boersen_und_gespeicherte_einstellung(conn):
+    assert quellen.datum(1763700000) == "2025-11-21" and quellen.datum("2026-11-17T07:39:35Z") == "2026-11-17"
+    assert quellen.datum(None) == "" and quellen.datum("gestern") == ""
+    daten = {"data": [{"company_name": "V", "title": "Entwickler", "location": "Bremen", "created_at": 1763700000}]}
+    client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=daten)))
+    assert quellen.stellenportal(["entwickler"], "Bremen", client)[0]["datum"] == "2025-11-21"
+    assert suche.gespeicherter_auftrag(conn).max_tage == suche.MAX_TAGE
+    db.setze_einstellung(conn, "suche.max_tage", "30")
+    assert suche.gespeicherter_auftrag(conn).max_tage == 30 and suche.gespeicherter_auftrag(conn).aufgefrischte
+
+
+def test_ampel_nach_der_ersten_veroeffentlichung():
+    from datetime import date
+    h = date(2026, 11, 21)
+    assert [suche.ampel({"datum": d}, h) for d in ("2026-11-20", "2026-11-07", "2026-11-06", "2026-10-23", "2026-10-22")] == \
+        ["gruen", "gruen", "gelb", "gelb", "rot"]
+    assert suche.ampel({}, h) == "" and suche.ampel({"datum": "2026-10-01", "bearbeitet": "2026-11-20"}, h) == "rot"

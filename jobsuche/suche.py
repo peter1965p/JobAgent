@@ -12,7 +12,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as ZeitUeberschritten
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 
@@ -38,14 +38,18 @@ def _arbeitszeit(stelle: dict) -> str:
     return ", ".join(name for name, gilt in (("Vollzeit", stelle.get("arbeitszeitVollzeit")), ("Teilzeit", teilzeit)) if gilt)
 
 
-def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None = None, arbeitszeit: str = "") -> list[dict]:
-    """`begriffe` darf mehrere Suchwörter enthalten, durch Kommas getrennt."""
+def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None = None, arbeitszeit: str = "",
+          max_tage: int = 0) -> list[dict]:
+    """`begriffe` darf mehrere Suchwörter enthalten, durch Kommas getrennt. `max_tage` 0 heißt: jedes Alter."""
     woerter = [b.strip() for b in begriffe.split(",") if b.strip()]
     if not woerter or not wo.strip():
         raise SucheFehler("Gib einen Suchbegriff und einen Ort an.")
     client = client or httpx.Client(timeout=30, headers={"User-Agent": config.USER_AGENT})
     treffer: dict[str, dict] = {}
     filter_zeit = {"arbeitszeit": ARBEITSZEIT_CODE[arbeitszeit]} if arbeitszeit else {}
+    if max_tage:
+        # Die Börse filtert nach dem aktuellen Zeitraum. Aufgefrischte alte Anzeigen fängt danach `zu_alt` ab.
+        filter_zeit["veroeffentlichtseit"] = min(max_tage, 100)
     for wort in woerter:
         try:
             antwort = client.get(API, headers={"X-API-Key": API_SCHLUESSEL}, params={
@@ -76,6 +80,9 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
                 "url": stelle.get("externeUrl") or ANZEIGE.format(referenz),
                 "website": "",
                 "quelle": "Jobbörse",
+                "datum": quellen.datum(stelle.get("datumErsteVeroeffentlichung")
+                                       or (stelle.get("veroeffentlichungszeitraum") or {}).get("von")),
+                "bearbeitet": quellen.datum(stelle.get("aenderungsdatum")),
             }
     return list(treffer.values())
 
@@ -254,6 +261,50 @@ def suchort(conn: sqlite3.Connection) -> str:
     return re.split(r"[\s(,]", zeile[0])[0] if zeile and zeile[0] else ""
 
 
+MAX_TAGE = 15  # Was länger als zwei Wochen online ist, ist oft schon vergeben oder ein Ladenhüter.
+
+
+def alter_tage(datum: str, heute: date | None = None) -> int | None:
+    """Tage seit der ersten Veröffentlichung. Ohne Datum None: Dann lässt sich nichts sagen, der Treffer bleibt."""
+    try:
+        return ((heute or date.today()) - date.fromisoformat(datum)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def zu_alt(treffer: dict, max_tage: int, heute: date | None = None, aufgefrischte: bool = True) -> bool:
+    """Mit `aufgefrischte` zählt die letzte Bearbeitung: Eine alte Anzeige, die die Firma gerade überarbeitet hat,
+    bleibt, `alter_text` zeigt aber, seit wann sie online ist. Ohne zählt streng die erste Veröffentlichung."""
+    alter = alter_tage(treffer.get("datum", ""), heute)
+    bearbeitet = alter_tage(treffer.get("bearbeitet", ""), heute) if aufgefrischte else None
+    if alter is not None and bearbeitet is not None:
+        alter = min(alter, bearbeitet)
+    return bool(max_tage) and alter is not None and alter > max_tage
+
+
+AMPEL_GELB, AMPEL_ROT = 15, 30
+
+
+def ampel(treffer: dict, heute: date | None = None) -> str:
+    """Wie lange die Anzeige wirklich draußen ist, ab der ersten Veröffentlichung: grün unter 15 Tagen, gelb ab 15, rot ab 30."""
+    alter = alter_tage(treffer.get("datum", ""), heute)
+    if alter is None:
+        return ""
+    return "rot" if alter >= AMPEL_ROT else "gelb" if alter >= AMPEL_GELB else "gruen"
+
+
+def alter_text(treffer: dict, heute: date | None = None) -> str:
+    """„online seit 34 Tagen, bearbeitet vor 15“: Eine alte Anzeige, die nur aufgefrischt wurde, soll man erkennen."""
+    alter = alter_tage(treffer.get("datum", ""), heute)
+    if alter is None:
+        return ""
+    text = "heute veröffentlicht" if alter <= 0 else "seit gestern online" if alter == 1 else f"online seit {alter} Tagen"
+    bearbeitet = alter_tage(treffer.get("bearbeitet", ""), heute)
+    if bearbeitet is not None and alter - bearbeitet >= 3:
+        text += f", zuletzt bearbeitet vor {bearbeitet} Tag{'en' if bearbeitet != 1 else ''}"
+    return text
+
+
 @dataclass
 class Auftrag:
     """`umkreis` 0 heißt: die ganze Region oder, ohne Ort, das ganze Land. `branche` leer: aus den Fakten."""
@@ -266,6 +317,8 @@ class Auftrag:
     searxng: str = ""
     arbeitszeit: str = ""
     nur_ki: bool = False  # nur Stellen, deren Anzeige KI-Arbeit ausdrücklich nennt
+    max_tage: int = MAX_TAGE  # Anzeigen, die länger online sind, fallen raus. 0: jedes Alter
+    aufgefrischte: bool = True  # alte Anzeigen behalten, die in dieser Zeit bearbeitet wurden
 
 
 def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
@@ -273,7 +326,8 @@ def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
     lies = lambda name, vorgabe="": db.einstellung(conn, f"suche.{name}", vorgabe)
     gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q)
     return Auftrag(lies("begriffe"), lies("ort") or suchort(conn), lies("land", "de"), int(lies("umkreis", "50")),
-                   lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"), lies("nur_ki") == "1")
+                   lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"), lies("nur_ki") == "1",
+                   int(lies("max_tage", str(MAX_TAGE)) or 0), lies("aufgefrischte", "1") == "1")
 
 
 def _gleich(treffer: dict) -> str:
@@ -440,7 +494,8 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
             hinweise.append("Jobbörse: Sie deckt nur Deutschland ab.")
         else:
             # Die Jobbörse kennt keine Regionen, 200 km ist ihr größter Umkreis.
-            quelle("Jobbörse", lambda: suche(auftrag.begriffe, auftrag.ort or "Deutschland", auftrag.umkreis or 200, client, auftrag.arbeitszeit))
+            quelle("Jobbörse", lambda: suche(auftrag.begriffe, auftrag.ort or "Deutschland", auftrag.umkreis or 200, client, auftrag.arbeitszeit,
+                                               auftrag.max_tage))
     if begriffe and "arbeitnow" in auftrag.quellen:
         quelle("Arbeitnow", lambda: quellen.stellenportal(begriffe, auftrag.ort, client, auftrag.arbeitszeit))
 
@@ -477,6 +532,12 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
             name, abruf(begriffe, auftrag.ort, auftrag.umkreis, auftrag.land, api, client)))
     if auftrag.arbeitszeit and {"verzeichnis", "internet"} & set(auftrag.quellen):
         hinweise.append(f"Arbeitszeit: Verzeichnis und Internet liefern Firmen, keine Stellen. Dort gilt „{ARBEITSZEIT[auftrag.arbeitszeit]}“ nicht.")
+    if auftrag.max_tage:
+        # Vor dem Zusammenführen: Sonst verdeckte eine alte Anzeige einer Firma ihre frische.
+        vorher = sum(map(len, listen))
+        listen = [[t for t in liste if not zu_alt(t, auftrag.max_tage, aufgefrischte=auftrag.aufgefrischte)] for liste in listen]
+        if sum(map(len, listen)) < vorher:
+            hinweise.append(f"Zu alt: {vorher - sum(map(len, listen))} Anzeigen sind länger als {auftrag.max_tage} Tage online.")
     treffer = _vereine(listen)
     woerter = ki.ausschlusswoerter(conn)
     if woerter:

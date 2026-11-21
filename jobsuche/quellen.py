@@ -9,6 +9,7 @@ import html
 import math
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -296,6 +297,14 @@ def _passt_zeit(stelle: dict, arbeitszeit: str) -> bool:
     return True
 
 
+def datum(wert) -> str:
+    """Veröffentlichungsdatum als JJJJ-MM-TT aus Unix-Zeit oder ISO-Text, sonst leer."""
+    if isinstance(wert, (int, float)) and wert > 0:
+        return datetime.fromtimestamp(wert, timezone.utc).date().isoformat()
+    treffer = re.match(r"\s*(\d{4}-\d{2}-\d{2})", str(wert or ""))
+    return treffer.group(1) if treffer else ""
+
+
 def stellenportal(begriffe: list[str], ort: str, client: httpx.Client | None = None, arbeitszeit: str = "") -> list[dict]:
     """Arbeitnow: freie öffentliche Schnittstelle mit Stellen vor allem aus Deutschland. Ein Abruf je Suche genügt."""
     try:
@@ -318,7 +327,7 @@ def stellenportal(begriffe: list[str], ort: str, client: httpx.Client | None = N
         treffer.append({
             "referenz": f"arbeitnow:{stelle.get('slug', '')}", "firma": firma, "titel": titel, "beruf": "", "ort": lage,
             "entfernung": None, "url": str(stelle.get("url", "")), "website": "", "quelle": "Arbeitnow",
-            "beschreibung": str(stelle.get("description", ""))[:20000],
+            "beschreibung": str(stelle.get("description", ""))[:20000], "datum": datum(stelle.get("created_at")),
         })
     return treffer
 
@@ -600,7 +609,7 @@ def adzuna(begriffe: list[str], ort: str, umkreis: int, land: str, schluessel: s
                 "referenz": f"adzuna:{stelle['id']}", "firma": firma[:120], "titel": _ohne_tags(stelle.get("title"))[:200], "beruf": "",
                 "ort": _ohne_tags((stelle.get("location") or {}).get("display_name", ""))[:80], "entfernung": None,
                 "url": str(stelle.get("redirect_url", "")), "website": "", "quelle": "Adzuna",
-                "beschreibung": _ohne_tags(stelle.get("description"))[:5000]})
+                "beschreibung": _ohne_tags(stelle.get("description"))[:5000], "datum": datum(stelle.get("created"))})
     return list(treffer.values())
 
 
@@ -625,5 +634,5 @@ def jooble(begriffe: list[str], ort: str, umkreis: int, land: str, schluessel: s
             treffer.setdefault(str(stelle["id"]), {
                 "referenz": f"jooble:{stelle['id']}", "firma": firma[:120], "titel": _ohne_tags(stelle.get("title"))[:200], "beruf": "",
                 "ort": _ohne_tags(stelle.get("location"))[:80], "entfernung": None, "url": str(stelle.get("link", "")), "website": "",
-                "quelle": "Jooble", "beschreibung": _ohne_tags(stelle.get("snippet"))[:5000]})
+                "quelle": "Jooble", "beschreibung": _ohne_tags(stelle.get("snippet"))[:5000], "datum": datum(stelle.get("updated"))})
     return list(treffer.values())
