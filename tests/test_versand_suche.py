@@ -1993,11 +1993,12 @@ def test_nachfrage_nein_bleibt_offen_und_fakten_sind_fuer_sich_verstaendlich(con
                "selbst": [], "cv": [], "nachweise": [], "anzeige": "", "modell": "m", "zeit": ""}
     conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps(eignung), fid))
     conn.commit()
-    neu = ki.ergaenze_eignung(conn, fid, {"Erfahrung mit User Stories": "nö, kann man lernen", "Erfahrung mit Docker": "ja"})
+    neu = ki.ergaenze_eignung(conn, fid, {"Erfahrung mit User Stories": "nö, kann man lernen",
+                                          "Erfahrung mit Docker": "ja, bei Plexora seit 2025"})
     assert neu["fehlt"] == ["Erfahrung mit User Stories"] and neu["erfuellt"] == ["Erfahrung mit Docker"]
     assert neu["antworten"]["Erfahrung mit User Stories"] == "nö, kann man lernen"
     texte = [z[0] for z in conn.execute("SELECT text FROM fakten")]
-    assert "Erfahrung mit Docker (eigene Angabe)" in texts if (texts := texte) else False
+    assert "Erfahrung mit Docker: bei Plexora seit 2025" in texte
     assert "ja" not in texte and not any("lernen" in t for t in texte)
     assert "Deine Antwort: nö, kann man lernen" in ki.eignung_text(neu)
 
@@ -2111,3 +2112,26 @@ def test_routen_link_fuer_das_navi():
     url = suche.routen_link((53.08, 8.8), (52.83, 8.39))
     assert url == ("https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route="
                    "53.08000%2C8.80000%3B52.83000%2C8.39000")
+
+
+def test_blosses_ja_belegt_nichts_und_anzeigentext_wird_kein_fakt(conn):
+    import json
+    fid = firmen.lege_an(conn, "X GmbH", email="a@x.de")
+    punkte = ["Kubernetes - tiefgreifende Konzeption", "Du automatisierst Deployments mit GitLab CI/CD"]
+    eignung = {"score": 0, "erfuellt": [], "teilweise": [], "fehlt": list(punkte), "selbst": [], "cv": [],
+               "nachweise": [], "anzeige": "", "modell": "m", "zeit": ""}
+    conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps(eignung), fid))
+    conn.commit()
+    neu = ki.ergaenze_eignung(conn, fid, {punkte[0]: "ja", punkte[1]: "jo, bei Plexora"})
+    assert neu["fehlt"] == [punkte[0]] and neu["nur_ja"] == [punkte[0]]
+    gespeichert = json.loads(conn.execute("SELECT ki_eignung FROM firmen WHERE id = ?", (fid,)).fetchone()[0])
+    assert "nur_ja" not in gespeichert and gespeichert["antworten"][punkte[0]] == "ja"
+    texte = [z[0] for z in conn.execute("SELECT text FROM fakten")]
+    assert texte == ["Zur Anforderung „Du automatisierst Deployments mit GitLab CI/CD“: bei Plexora"]
+    assert ki.blosses_ja("Klar!") and not ki.blosses_ja("klar, seit 2019")
+
+
+def test_menuepunkt_unter_geschaeftsfuehrung_ist_kein_name():
+    menue = "Unternehmen\nZurück\nÜbersicht\nProfil\nGeschäftsführung\nTrack Record\nAwards\nKarriere"
+    assert firmen.lies_kontakt(menue)["personen"] == ""
+    assert firmen.lies_kontakt("Geschäftsführung: Ralf Koenzen")["personen"] == "Ralf Koenzen"

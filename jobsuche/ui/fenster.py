@@ -641,7 +641,7 @@ class NachfrageDialog(QDialog):
             form.addWidget(label(punkt, "", True))
             feld = QLineEdit()
             feld.setMaxLength(ki.MAX_ANTWORT)
-            feld.setPlaceholderText("Trifft zu? Kurz beschreiben, sonst leer lassen")
+            feld.setPlaceholderText("Wo und wie? Ein „ja“ allein reicht nicht. Trifft nicht zu: leer lassen")
             form.addWidget(feld)
             self.felder[punkt] = feld
         form.addStretch()
@@ -669,7 +669,12 @@ def ergaenze_mit_rueckfrage(f, conn, firma_id: int, eignung: dict) -> dict:
     if not antworten:
         return eignung
     try:
-        return ki.ergaenze_eignung(conn, firma_id, antworten)
+        neu = ki.ergaenze_eignung(conn, firma_id, antworten)
+        nur_ja = neu.pop("nur_ja", [])
+        if nur_ja:
+            f.melde(f"Ein bloßes „ja“ ist kein Beleg: {len(nur_ja)} Punkt(e) bleiben offen. "
+                    "Schreib kurz dazu, wo und wie du das gemacht hast, zum Beispiel „im eigenen Projekt seit 2025“.")
+        return neu
     except (ki.NichtMoeglich, ValueError) as fehler:
         f.melde(str(fehler))
         return eignung

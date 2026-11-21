@@ -442,7 +442,18 @@ def fakt_aus_antwort(punkt: str, antwort: str) -> str:
     rest = BLOSSES_JA.sub("", antwort, count=1).strip() if BLOSSES_JA.match(antwort) else antwort
     if not rest:
         return f"{punkt} (eigene Angabe)"
+    if ANREDE_VORN.match(punkt):
+        # „Du automatisierst …“ ist Anzeigentext, kein Satz über dich.
+        return f"Zur Anforderung „{punkt}“: {rest}"
     return f"{punkt}: {rest}"
+
+
+ANREDE_VORN = re.compile(r"(?i)^(?:du|sie|ihr)\b")
+
+
+def blosses_ja(antwort: str) -> bool:
+    """„ja“, „klar“, „jo!“ ohne ein Wort dazu, wo oder wie. Das belegt nichts."""
+    return bool(BLOSSES_JA.match(antwort)) and not BLOSSES_JA.sub("", antwort, count=1).strip()
 
 
 def ergaenze_eignung(conn: sqlite3.Connection, firma_id: int, antworten: dict[str, str]) -> dict:
@@ -464,6 +475,11 @@ def ergaenze_eignung(conn: sqlite3.Connection, firma_id: int, antworten: dict[st
             # „nö, kann man lernen“ ist ehrlich, aber kein Beleg: Der Punkt bleibt offen, die Antwort steht als Hinweis dabei.
             eignung.setdefault("antworten", {})[punkt] = text
             continue
+        if blosses_ja(text):
+            # Sonst würde der Anzeigentext wörtlich zum Fakt, und die Mail verspräche genau, was gefordert ist.
+            eignung.setdefault("antworten", {})[punkt] = text
+            eignung.setdefault("nur_ja", []).append(punkt)
+            continue
         profil.lege_eigenen_fakt_an(conn, "erfahrung", fakt_aus_antwort(punkt, text), "Nachfrage Eignung")
         for schluessel in ("fehlt", "teilweise", "selbst"):
             if punkt in eignung.get(schluessel, []):
@@ -475,7 +491,7 @@ def ergaenze_eignung(conn: sqlite3.Connection, firma_id: int, antworten: dict[st
         uebernommen += 1
     if uebernommen or eignung.get("antworten"):
         eignung["score"] = _score(eignung)
-        conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps(eignung, ensure_ascii=False), firma_id))
+        conn.execute("UPDATE firmen SET ki_eignung = ? WHERE id = ?", (json.dumps({k: v for k, v in eignung.items() if k != "nur_ja"}, ensure_ascii=False), firma_id))
         conn.commit()
         db.protokolliere(conn, "Eignung ergänzt", f"{uebernommen} eigene Angaben, jetzt {eignung['score']} %", firma_id)
     return eignung

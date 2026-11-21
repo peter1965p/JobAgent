@@ -89,7 +89,11 @@ MAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}", re.I)
 WEDER_NOCH_NAME = {"registergericht", "handelsregister", "amtsgericht", "registernummer", "telefon", "mail", "kontakt",
                    "umsatzsteuer", "sitz", "geschäftsführung", "gesellschafter", "impressum", "die", "der", "unsere", "unser", "unserer",
                    "social", "media", "kanäle", "team", "experten", "expert", "expertinnen", "ansprechpartner", "ihre", "ihr", "weitere",
-                   "datenschutz", "unternehmen", "firma", "angaben", "inhaltlich", "verantwortlich", "alle", "das", "und", "gmbh", "bank"}
+                   "datenschutz", "unternehmen", "firma", "angaben", "inhaltlich", "verantwortlich", "alle", "das", "und", "gmbh", "bank",
+                   # Menüpunkte: In Navigationen steht „Geschäftsführung“ oft direkt über dem nächsten Punkt.
+                   "track", "record", "awards", "profil", "übersicht", "zurück", "karriere", "stellenangebote", "news",
+                   "aktuelles", "presse", "produkte", "lösungen", "leistungen", "services", "standorte", "historie",
+                   "geschichte", "about", "home", "startseite", "menü", "partner", "referenzen", "downloads", "events"}
 # Solche Adressen erreichen selten die Geschäftsführung. Sie sind nur die letzte Wahl.
 NEBENADRESSE = re.compile(r"^(impressum|datenschutz|privacy|abuse|webmaster|noreply|no-reply|dsb|dpo|jugendschutz\w*|compliance|presse|press|investor\w*|ir|support|hotline|service)@", re.I)
 

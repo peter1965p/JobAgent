@@ -44,7 +44,7 @@ def zahlen(text: str) -> set[str]:
 
 
 def adressen(text: str) -> set[str]:
-    return {a.rstrip(".").lower().removeprefix("https://").removeprefix("http://") for a in ADRESSE.findall(text)}
+    return {a.rstrip(".:!?\"'“”»«").lower().removeprefix("https://").removeprefix("http://") for a in ADRESSE.findall(text)}
 
 
 def kurzname(firma: str) -> str:

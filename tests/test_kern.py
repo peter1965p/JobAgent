@@ -479,3 +479,10 @@ def test_wortzahl_ohne_gruss_und_signatur():
     befunde = regeln.pruefe("b", rumpf + signatur, "a@x.de", [], [])
     assert not any("Wörtern" in b.text for b in befunde)
     assert any("190 Wörtern" in b.text for b in regeln.pruefe("b", "Wort " * 190 + signatur, "a@x.de", [], []))
+
+
+def test_satzzeichen_hinter_einer_adresse_gehoeren_nicht_dazu():
+    from jobsuche import regeln
+    assert regeln.adressen("läuft auf www.plexora.eu: live, siehe https://github.com/ich/repo!") == {
+        "www.plexora.eu", "github.com/ich/repo"}
+    assert regeln.adresse_belegt("www.plexora.eu", {"www.plexora.eu"}, set())

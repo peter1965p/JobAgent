@@ -2,6 +2,13 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.3.1 – 2026-11-21
+
+### Behoben
+- Ein bloßes „ja“ bei der Nachfrage zur Eignung wurde ein Fakt aus dem wörtlichen Anzeigentext. Die Mail versprach dann genau, was gefordert war. Jetzt bleibt der Punkt offen, bis du schreibst, wo und wie. Anforderungen in Du-Form („Du automatisierst …“) werden nicht mehr wie ein Satz über dich gespeichert.
+- Menüpunkte unter „Geschäftsführung“ (etwa „Track Record“) galten als Name der Ansprechperson.
+- Ein Satzzeichen direkt hinter einer Adresse („www.plexora.eu:“) zählte zur Adresse, die Prüfung meldete dann „Adresse ohne Beleg“.
+
 ## 0.3.0 – 2026-11-20
 
 ### Neu
