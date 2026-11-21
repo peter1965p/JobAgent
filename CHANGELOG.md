@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.5.2 – 2026-11-21
+
+### Behoben
+- Prüfung: Fragt die Anzeige nach dem Eintrittstermin, sperrt ein künftiges Startdatum im Satz dazu („Ich kann ab 01.12.2026 anfangen“) die Mail nicht mehr als „Zahl ohne Beleg“. Vergangene Daten und Daten ohne Frage in der Anzeige müssen weiter belegt sein.
+
 ## 0.5.1 – 2026-11-21
 
 ### Behoben

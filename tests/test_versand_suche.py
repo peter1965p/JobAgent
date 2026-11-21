@@ -5,6 +5,7 @@ from email import message_from_bytes
 from email import policy
 
 import json
+from datetime import date
 import re
 
 import time
@@ -2182,3 +2183,24 @@ def test_ampel_nach_der_ersten_veroeffentlichung():
     assert [suche.ampel({"datum": d}, h) for d in ("2026-11-20", "2026-11-07", "2026-11-06", "2026-10-23", "2026-10-22")] == \
         ["gruen", "gruen", "gelb", "gelb", "rot"]
     assert suche.ampel({}, h) == "" and suche.ampel({"datum": "2026-10-01", "bearbeitet": "2026-11-20"}, h) == "rot"
+
+
+def test_eintrittsdatum_ist_erlaubt_wenn_die_anzeige_danach_fragt(conn, tmp_path):
+    heute = date(2026, 11, 21)
+    assert ki.ohne_eintrittsdatum("Ich kann ab 01.12.2026 anfangen. Seit 01.03.2019 im Support.", heute) == \
+        "Ich kann ab  anfangen. Seit 01.03.2019 im Support."
+    assert ki.ohne_eintrittsdatum("Ich war ab 01.03.2019 verfügbar.", heute) == "Ich war ab 01.03.2019 verfügbar."
+    _bereit_fuer_mail(conn, tmp_path)
+    client, _ = _netz_anzeige(ANZEIGE_TEXT + "\n\nBewerbung mit möglichem Eintrittstermin an uns.")
+    fid = suche.uebernimm(conn, STELLE_BA, client)
+    firmen.aendere(conn, fid, email="jolyne.donkor@wiit.cloud")
+    eid = ki.erstelle_entwurf(conn, fid, "m", _Eignung({}))
+    betreff, text = conn.execute("SELECT betreff, text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()
+    ki.speichere_text(conn, eid, betreff, text + "\n\nIch kann ab 01.12.2099 anfangen.")
+    assert not any("Zahl ohne Beleg" in b.text for b in ki.pruefe_entwurf(conn, eid))
+    # Ohne Frage in der Anzeige bleibt das Datum unbelegt.
+    andere = firmen.lege_an(conn, "Ohne Anzeige GmbH", email="info@ohne.de")
+    eid2 = ki.erstelle_entwurf(conn, andere, "m", _Eignung({}))
+    b2, t2 = conn.execute("SELECT betreff, text FROM entwuerfe WHERE id = ?", (eid2,)).fetchone()
+    ki.speichere_text(conn, eid2, b2, t2 + "\n\nIch kann ab 01.12.2099 anfangen.")
+    assert any("Zahl ohne Beleg" in b.text for b in ki.pruefe_entwurf(conn, eid2))

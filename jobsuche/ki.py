@@ -602,6 +602,34 @@ def gehaltszeile(conn: sqlite3.Connection) -> str:
     return f"Meine Gehaltsvorstellung liegt bei {wert}." if wert else ""
 
 
+# Fragt die Anzeige nach dem Eintrittstermin, darf im Satz dazu ein Startdatum stehen, das heute oder später liegt.
+EINTRITT_GEFRAGT = re.compile(r"(?i)eintrittstermin|eintrittsdatum|frühestmöglich|starttermin|verfügbarkeit|"
+                              r"kündigungsfrist|earliest (?:possible )?start")
+# Ein Satz: alles bis zum Punkt, wobei Punkte zwischen Ziffern (Datum) nicht zählen.
+SATZ = re.compile(r"(?:[^.\n]|(?<=\d)\.(?=\d))+")
+EINTRITT_WORT = re.compile(r"(?i)\b(?:anfangen|beginnen|starten|einsteigen|verfügbar|eintritt\w*)\b")
+DATUM = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+
+
+def eintritt_gefragt(conn: sqlite3.Connection, firma_id: int) -> bool:
+    anzeige, _ = anzeige_der_firma(conn, firma_id)
+    return bool(EINTRITT_GEFRAGT.search(anzeige))
+
+
+def ohne_eintrittsdatum(text: str, heute: date | None = None) -> str:
+    """Nimmt künftige Daten aus Sätzen zum Arbeitsbeginn heraus, damit die Zahlenprüfung sie nicht sperrt.
+    Vergangene Daten bleiben drin und müssen belegt sein."""
+    heute = heute or date.today()
+
+    def kuenftig(m: re.Match) -> str:
+        try:
+            return "" if date(int(m[3]), int(m[2]), int(m[1])) >= heute else m[0]
+        except ValueError:
+            return m[0]
+
+    return SATZ.sub(lambda s: DATUM.sub(kuenftig, s[0]) if EINTRITT_WORT.search(s[0]) else s[0], text)
+
+
 def _mit_gehalt(conn: sqlite3.Connection, firma_id: int, kern: str) -> str:
     zeile = gehaltszeile(conn) if gehalt_gefragt(conn, firma_id) else ""
     return f"{kern.rstrip()}\n\n{zeile}" if zeile else kern
@@ -857,6 +885,8 @@ def pruefe_entwurf(conn: sqlite3.Connection, entwurf_id: int, text: str | None =
             zusatz.append(regeln.Befund("hinweis", "Die Anzeige bittet um eine Gehaltsvorstellung. " + (
                 "Trag sie unter „Profil“ ein, dann hängt die App einen festen Satz an." if not gehalt else
                 "Der Satz dazu fehlt in der Mail: „" + gehalt + "“")))
+    if eintritt_gefragt(conn, e["firma_id"]):
+        pruef_text = ohne_eintrittsdatum(pruef_text)
     eigene = [r for r in regeln.lade_eigene(conn) if not (gehalt and gehalt in e["text"] and "gehalt" in (r["meldung"] or "").lower())]
     return zusatz + regeln.pruefe(e["betreff"], pruef_text, e["empfaenger"], quellen, andere,
                          firma["email"].split("@")[-1], eigene, ohne_alter(conn),
