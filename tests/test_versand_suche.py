@@ -2247,3 +2247,24 @@ def test_remote_stellen_bleiben_trotz_gebiet(conn, monkeypatch):
     hinweise = []
     bleiben = suche.mit_fahrstrecke(conn, treffer, suche.Auftrag("Admin", "Bremen", umkreis=50), hinweise)
     assert [t["firma"] for t in bleiben] == ["Fern"] and bleiben[0]["entfernung"] == 600
+
+
+LOBO = ("Moin!\nDu denkst nicht nur in Systemen? Dann bist du bei uns richtig. Das erwartet dich bei uns: deine Ideen.\n"
+        "Ganz unkompliziert per E-Mail: bewerbung@lobo-home.de\n\nAlex & Inga – Personalteam\n\nÜber uns\nWir sind ein Großhändler.")
+
+
+def test_anrede_aus_anzeige_mit_du_und_kleinschreibung():
+    firma = {"personen": "Felix Lothringer, Geschäftsführer"}
+    assert ki.kontakte_aus_anzeige(LOBO) == ["Alex", "Inga"]
+    assert ki.anzeige_duzt(LOBO)
+    assert ki.anrede_fuer(firma, LOBO) == "Hallo Alex, hallo Inga,"
+    siez = "Wir suchen Sie. Ihre Aufgaben sind vielfältig. Bitte senden Sie Ihre Unterlagen. Ansprechpartnerin: Frau Anna Meyer"
+    assert ki.anrede_fuer(firma, siez) == "Guten Tag Anna Meyer,"
+    assert ki.anrede_fuer(firma, "") == "Guten Tag Felix Lothringer,"
+    assert ki.anrede_fuer({"personen": ""}, LOBO) == "Hallo Alex, hallo Inga,"
+    assert ki.anrede_fuer({"personen": "Felix Lothringer"}, "Du bist dabei, dich freut dein Team.") == "Hallo Felix,"
+    text = ki.setze_zusammen(firma, "Dass Systeme laufen, ist mein Alltag.", "Peter Muster", "", LOBO)
+    assert text.startswith("Hallo Alex, hallo Inga,\n\ndass Systeme laufen")
+    assert ki.klein_nach_anrede("Zuletzt habe ich") == "zuletzt habe ich"
+    assert ki.klein_nach_anrede("Sie suchen jemanden") == "Sie suchen jemanden"
+    assert ki.klein_nach_anrede("Datenbanken sind mein Ding") == "Datenbanken sind mein Ding"

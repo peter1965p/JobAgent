@@ -772,5 +772,27 @@ def test_ampel_spalte_zeigt_alter_mit_farbe(app, f):
                        "quelle": "Jobbörse", "datum": alt, "bearbeitet": (date.today() - timedelta(days=15)).isoformat()}}
     s._zeige()
     item = s.tab.item(0, fenster.SPALTE_ALTER)
-    assert item.data(fenster.Qt.DisplayRole) == 40 and item.data(fenster.Qt.DecorationRole).name() == fenster.AMPEL["rot"]
+    assert item.data(fenster.Qt.DisplayRole) == 40 and item.data(fenster.Qt.UserRole + 1) == fenster.AMPEL["rot"] \
+        and not item.data(fenster.Qt.DecorationRole).isNull()
     assert "zuletzt bearbeitet vor 15 Tagen" in item.toolTip()
+
+
+def test_laufband_zeigt_hinweise_nacheinander_in_einer_zeile(app):
+    from PySide6.QtTest import QTest
+    from jobsuche.ui.laufband import Laufband
+    band = Laufband("System Probs:")
+    band.resize(600, 30)
+    band.setText("")
+    assert band.isHidden()
+    band.setText("Erster Hinweis\n\nZweiter Hinweis\nDritter")
+    assert not band.isHidden() and band.text() == "Erster Hinweis\nZweiter Hinweis\nDritter"
+    assert band.aktuell() == "Erster Hinweis" and band.zaehler.text() == "1/3" and "Dritter" in band.toolTip()
+    band.weiter()
+    for _ in range(40):
+        if band.aktuell() == "Zweiter Hinweis":
+            break
+        QTest.qWait(50)
+    assert band.aktuell() == "Zweiter Hinweis"
+    assert band.zaehler.text() == "2/3"
+    band.clear()
+    assert band.isHidden() and band.text() == ""

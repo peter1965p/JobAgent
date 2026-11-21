@@ -524,14 +524,66 @@ def _nur_kern(text: str) -> str:
     return re.split(r"\n\s*(viele grüße|mit freundlichen grüßen|beste grüße|freundliche grüße)\b", text, flags=re.I)[0].strip()
 
 
-def setze_zusammen(firma: sqlite3.Row, kern: str, absender: str, signatur: str = "") -> str:
+# Duzt die Anzeige ihre Leser, grüßt die Mail mit „Hallo Vorname“ statt „Guten Tag Vor- und Nachname“.
+DU_WORT = re.compile(r"\b(?:du|dich|dir|dein(?:e|en|em|er|es)?)\b", re.I)
+SIE_WORT = re.compile(r"(?<![.!?:]\s)(?<!^)\b(?:Sie|Ihnen|Ihr(?:e|en|em|er|es)?)\b", re.M)
+_NAME = r"[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)?"
+# „Alex & Inga – Personalteam“, „Anna Meyer, Recruiting“: Wer unter der Anzeige steht, geht dem Impressum vor.
+KONTAKT_UNTERSCHRIFT = re.compile(
+    rf"^\s*((?:{_NAME})(?: {_NAME})?(?:\s*(?:&|und|,)\s*{_NAME}(?: {_NAME})?)*)\s*[–—,|-]\s*(?:dein(?:e)?\s+|euer\s+|ihr(?:e)?\s+|aus dem\s+|vom\s+)?"
+    r"(?:Personal|HR\b|Human Resources|Recruiting|People|Talent|Bewerbermanagement)", re.M)
+KONTAKT_ANSPRECH = re.compile(rf"(?:[Aa]nsprechpartner(?:in)?|[Kk]ontaktperson)\s*(?:ist)?\s*[:\-–]?\s*(?:Frau |Herr )?({_NAME} {_NAME})")
+# Nach „Hallo …,“ geht es klein weiter, außer bei Substantiven und der Höflichkeitsform.
+KLEIN_NACH_ANREDE = {"dass", "ich", "mit", "seit", "zuletzt", "als", "wenn", "weil", "da", "in", "im", "bei", "nach", "vor", "aus",
+                     "für", "über", "schon", "gerade", "genau", "gern", "gerne", "auch", "wie", "was", "hier", "heute", "damit",
+                     "so", "und", "aber", "denn", "obwohl", "während", "um", "ob", "an", "auf", "zu", "von", "mein", "meine",
+                     "meinen", "meinem", "meiner", "das", "der", "die", "den", "dem", "ein", "eine", "einen", "einem", "es",
+                     "wir", "eure", "euer", "deine", "dein", "bei", "vielen", "danke", "gestern", "neulich", "kurz", "nicht"}
+
+
+def anzeige_duzt(anzeige: str) -> bool:
+    du = len(DU_WORT.findall(anzeige or ""))
+    return du >= 3 and du > len(SIE_WORT.findall(anzeige or ""))
+
+
+def kontakte_aus_anzeige(anzeige: str) -> list[str]:
+    treffer = KONTAKT_UNTERSCHRIFT.search(anzeige or "")
+    if treffer:
+        return [n.strip() for n in re.split(r"\s*(?:&|und|,)\s*", treffer.group(1)) if n.strip()]
+    treffer = KONTAKT_ANSPRECH.search(anzeige or "")
+    return [treffer.group(1)] if treffer else []
+
+
+def ansprechpartner(firma: sqlite3.Row, anzeige: str = "") -> list[str]:
+    """Wer in der Anzeige unterschreibt oder als Ansprechpartner steht, sonst die erste Person aus dem Impressum."""
+    return kontakte_aus_anzeige(anzeige) or ([erste_person(firma)] if erste_person(firma) else [])
+
+
+def anrede_fuer(firma: sqlite3.Row, anzeige: str = "") -> str:
+    personen = ansprechpartner(firma, anzeige)
+    if anzeige_duzt(anzeige):
+        vornamen = [p.split()[0] for p in personen]
+        return ("Hallo " + ", hallo ".join(vornamen) + ",") if vornamen else "Hallo zusammen,"
+    return f"Guten Tag {personen[0]}," if personen else "Guten Tag,"
+
+
+def klein_nach_anrede(kern: str) -> str:
+    """„Guten Tag Name,\n\nDass …“ wird „dass …“: Nach dem Komma der Anrede geht es klein weiter."""
+    treffer = re.match(r"(\s*)([A-ZÄÖÜ][a-zäöüß]*)\b", kern)
+    if treffer and treffer.group(2).lower() in KLEIN_NACH_ANREDE:
+        return treffer.group(1) + treffer.group(2).lower() + kern[treffer.end():]
+    return kern
+
+
+def setze_zusammen(firma: sqlite3.Row, kern: str, absender: str, signatur: str = "", anzeige: str = "") -> str:
     """Mit Signatur aus dem Profil grüßt nur der Vorname, darunter steht die Signatur mit vollem Namen."""
-    anrede = f"Guten Tag {erste_person(firma)}," if erste_person(firma) else "Guten Tag,"
+    anrede = anrede_fuer(firma, anzeige)
+    kern = klein_nach_anrede(_nur_kern(kern))
     signatur = (signatur or "").strip()
     if signatur:
         vorname = absender.split()[0] if absender.split() else absender
-        return f"{anrede}\n\n{_nur_kern(kern)}\n\nViele Grüße\n{vorname}\n\n{signatur}"
-    return f"{anrede}\n\n{_nur_kern(kern)}\n\nViele Grüße\n{absender}"
+        return f"{anrede}\n\n{kern}\n\nViele Grüße\n{vorname}\n\n{signatur}"
+    return f"{anrede}\n\n{kern}\n\nViele Grüße\n{absender}"
 
 
 def _pruefe_bezug(text: str) -> str:
@@ -751,7 +803,8 @@ def entwurf_varianten(conn: sqlite3.Connection, entwurf_id: int, modell: str, ch
         melde(f"Variante {nummer} von {len(STILE)}")
         kern, _, _ = _schreibe_kern(conn, e["firma_id"], modell, chat, stil)
         kern = _mit_gehalt(conn, e["firma_id"], kern)
-        text = setze_zusammen(firma, kern, absender, db.einstellung(conn, "mail.signatur", ""))
+        text = setze_zusammen(firma, kern, absender, db.einstellung(conn, "mail.signatur", ""),
+                              anzeige_der_firma(conn, e["firma_id"])[0])
         ergebnis.append({"stil": schluessel, "name": name, "text": text, "befunde": pruefe_entwurf(conn, entwurf_id, text=text)})
     return ergebnis
 
@@ -835,11 +888,13 @@ def _schreibe_kern(conn: sqlite3.Connection, firma_id: int, modell: str, chat, s
 def _speichere_entwurf(conn, firma, kern: str, roher_betreff: str, absender: str, modell: str, fakt_ids: list) -> int:
     # Empfänger und Absender kommen aus der Datenbank, nie aus der Modellantwort.
     firma_id = firma["id"]
-    text = setze_zusammen(firma, kern, absender, db.einstellung(conn, "mail.signatur", ""))
+    anzeige = anzeige_der_firma(conn, firma_id)[0]
+    text = setze_zusammen(firma, kern, absender, db.einstellung(conn, "mail.signatur", ""), anzeige)
     betreff = re.sub(r"[\r\n]+", " ", roher_betreff).strip()
     betreff = re.sub(r"^z\.?\s*hd\.?[^:]*:\s*", "", betreff, flags=re.I)
-    if erste_person(firma):
-        betreff = f"z. Hd. {erste_person(firma)}: {betreff}"
+    personen = ansprechpartner(firma, anzeige)
+    if personen:
+        betreff = f"z. Hd. {' und '.join(personen)}: {betreff}"
     conn.execute("UPDATE entwuerfe SET status = 'verworfen' WHERE firma_id = ? AND status = 'entwurf'", (firma_id,))
     try:
         anhaenge = stellen_cv.anhaenge_fuer(conn, firma_id)

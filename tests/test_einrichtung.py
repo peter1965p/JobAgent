@@ -262,3 +262,32 @@ def test_wache_verhindert_echte_systemeingriffe():
         subprocess.Popen(["pkexec", "systemctl", "enable", "--now", "ollama"])
     with pytest.raises(AssertionError, match="wirklich"):
         einrichtung._laeuft(["/usr/bin/systemctl", "status"], print)
+
+
+def test_splash_protokoll_ersetzt_laufende_zeile_durch_ergebnis():
+    _app()
+    s = start.Splash()
+    s.melde("… Verbinde mit dem Ollama-Dienst")
+    s.melde("✓ Ollama-Dienst: läuft")
+    s.melde("… Frage Claude Code an")
+    assert s.protokoll == ["✓ Ollama-Dienst: läuft", "… Frage Claude Code an"]
+    for i in range(10):
+        s.melde(f"✓ Schritt {i}")
+    assert len(s.protokoll) == s.ZEILEN + 1 and s.protokoll[-1] == "✓ Schritt 9"
+    s.show()
+    QApplication.processEvents()
+    assert not s.grab().isNull()
+    s.close()
+
+
+def test_pruefung_meldet_jeden_schritt(monkeypatch):
+    monkeypatch.setattr(einrichtung, "ollama_laeuft", lambda: True)
+    monkeypatch.setattr(einrichtung, "sprachmodell_da", lambda: False)
+    monkeypatch.setattr(einrichtung.llm, "claude_status", lambda: "")
+    monkeypatch.setattr(einrichtung, "schluesselbund_da", lambda: True)
+    meldungen = []
+    info = system.erkenne(None)
+    pruefungen = einrichtung.pruefe(info, meldungen.append)
+    assert "… Verbinde mit dem Ollama-Dienst" in meldungen and "✓ Ollama-Dienst: läuft" in meldungen
+    assert any(m.startswith("✗ Sprachmodell") for m in meldungen)
+    assert len([m for m in meldungen if m[:2] in ("✓ ", "✗ ", "• ")]) == len(pruefungen)

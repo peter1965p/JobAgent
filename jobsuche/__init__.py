@@ -1,3 +1,3 @@
 """Job Agent: lokale Firmensuche mit RAG, lokalem LLM und Freigabe durch den Menschen."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

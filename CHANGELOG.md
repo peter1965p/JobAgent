@@ -2,6 +2,17 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.7.0 – 2026-11-21
+
+### Neu
+- **Splash zeigt live, was er prüft und verbindet:** System, Speicher, Ollama und Dienst, Sprach- und Suchmodell, Claude Code, Schlüsselbund, Datenbank, eigene Suchmaschine (SearXNG) und Jobbörse. Die laufende Zeile steht orange mit „…“, das Ergebnis ersetzt sie (✓ grün, ✗ rot, • Hinweis); neue Zeilen fahren von unten herein.
+- **Suche: Hinweise als Laufband „System Probs:“** statt eines Kastens mit vielen Zeilen. Jeder Hinweis fährt von unten herein und nach oben hinaus, rechts steht „2/8“; Maus darüber hält an, der Tooltip zeigt alle.
+
+### Behoben
+- Entwurf: Wer in der Anzeige unterschreibt („Alex & Inga – Personalteam“) oder als Ansprechpartner genannt ist, geht der Person aus dem Impressum vor – in Anrede und „z. Hd.“.
+- Entwurf: Duzt die Anzeige, beginnt die Mail mit „Hallo Vorname“ (bei mehreren „Hallo Alex, hallo Inga“) statt „Guten Tag Vor- und Nachname“.
+- Entwurf: Nach der Anrede geht es klein weiter („Guten Tag …,“ → „dass …“), außer bei Substantiven und „Sie“.
+
 ## 0.6.0 – 2026-11-21
 
 ### Neu

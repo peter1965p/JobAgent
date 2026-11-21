@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QShortcut
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand
 from . import start, theme
 from .anmelden import AnmeldeFenster
+from .laufband import Laufband
 from .schalter import Schalter
 
 STATUS_TEXT = {
@@ -688,6 +689,24 @@ SPALTE_ORT = 3
 SPALTE_ALTER = 8
 
 
+_AMPEL_ICONS: dict[str, QIcon] = {}
+
+
+def ampel_icon(farbe: str) -> QIcon:
+    """Runder Punkt statt des eckigen Farbkästchens, das Qt für eine Farbe zeichnet."""
+    if farbe not in _AMPEL_ICONS:
+        bild = QPixmap(28, 28)
+        bild.fill(Qt.transparent)
+        maler = QPainter(bild)
+        maler.setRenderHint(QPainter.Antialiasing)
+        maler.setPen(Qt.NoPen)
+        maler.setBrush(QColor(farbe))
+        maler.drawEllipse(3, 3, 22, 22)
+        maler.end()
+        _AMPEL_ICONS[farbe] = QIcon(bild)
+    return _AMPEL_ICONS[farbe]
+
+
 def remote_text(t: dict) -> str:
     return t["remote"] + (" – geht von überall, unabhängig vom Gebiet" if t.get("fern") else "")
 AMPEL = {"gruen": "#39ff14", "gelb": "#ffc400", "rot": "#ff3b30"}
@@ -1349,7 +1368,7 @@ class SucheSeite(Seite):
         self.hinweis = label("Die Nähe vergleicht nur Name und Kurztext mit deinen Fakten, das ersetzt keine Bewertung. "
                              "Daten: © OpenStreetMap-Mitwirkende, Stellen auch von arbeitnow.com, Adzuna und Jooble.", "gedimmt", True)
         ergebnis.lage.addWidget(self.hinweis)
-        self.ausfaelle = label("", "hinweis", True)
+        self.ausfaelle = Laufband("System Probs:")  # eine Zeile, die Hinweise fahren nacheinander durch
         ergebnis.lage.addWidget(self.ausfaelle)
         self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI", "Alter"],
                            [50, 165, None, 95, 52, 80, 60, 110, 62])
@@ -1475,7 +1494,8 @@ class SucheSeite(Seite):
             t = self.treffer.get(item.data(Qt.UserRole), {})
             farbe = AMPEL.get(suche.ampel(t))
             if farbe:
-                item.setData(Qt.DecorationRole, QColor(farbe))
+                item.setData(Qt.DecorationRole, ampel_icon(farbe))
+                item.setData(Qt.UserRole + 1, farbe)  # die Ampelfarbe als Text, für Tests und Tooltips
                 item.setToolTip(suche.alter_text(t))
             if t.get("remote"):
                 self.tab.item(r, SPALTE_ORT).setToolTip(remote_text(t))

@@ -117,6 +117,8 @@ class Splash(QWidget):
         self.setFixedSize(600, 340)
         self.bild = QPixmap(str(SPLASH_BILD))
         self.status = "Starte …"
+        self.protokoll: list[str] = []  # die letzten Schritte, jede neue Zeile fährt von unten herein
+        self._schub = 0.0
         self.fortschritt = 0.0
         self._danach = None
         self._uhr = QElapsedTimer()
@@ -135,6 +137,7 @@ class Splash(QWidget):
             self.laufe()
 
     def _tick(self) -> None:
+        self._schub = max(0.0, self._schub * 0.75 - 0.3)
         zeit = self._uhr.elapsed() / self.MIN_DAUER_MS
         if self._danach is None:
             self.fortschritt = min(zeit, 0.9)
@@ -146,8 +149,17 @@ class Splash(QWidget):
                 danach()
         self.update()
 
+    ZEILEN = 5
+    ZEILENHOEHE = 17
+
     def melde(self, text: str) -> None:
+        """„… Verbinde …“ zeigt, was gerade läuft; „✓/✗/• Ergebnis“ ersetzt diese Zeile. Andere Texte sind Status."""
         self.status = text
+        if text.startswith(("✓ ", "✗ ", "• ")) and self.protokoll and self.protokoll[-1].startswith("… "):
+            self.protokoll[-1] = text  # Ergebnis ersetzt die laufende Zeile, ohne neue Fahrt
+        else:
+            self.protokoll = (self.protokoll + [text])[-(self.ZEILEN + 1):]
+            self._schub = float(self.ZEILENHOEHE)
         self.update()
 
     def paintEvent(self, _):
@@ -182,10 +194,22 @@ class Splash(QWidget):
         p.setFont(schrift)
         p.setPen(QColor("#9a9eab"))
         p.drawText(QRectF(34, 136, 250, 48), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, "Direkt zum Chef, lokal und mit Freigabe")
-        schrift.setPixelSize(13)
+        # Was gerade geprüft und verbunden wird: unten die neueste Zeile, ältere wandern nach oben und verblassen.
+        schrift.setPixelSize(12)
         p.setFont(schrift)
-        p.setPen(QColor("#f5a623"))
-        p.drawText(QRectF(34, 232, 250, 56), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, self.status)
+        feld = QRectF(34, 186, 252, self.ZEILEN * self.ZEILENHOEHE)
+        p.save()
+        p.setClipRect(feld)
+        zeilen = self.protokoll[-(self.ZEILEN + 1):]
+        for nummer, zeile in enumerate(reversed(zeilen)):
+            y = feld.bottom() - (nummer + 1) * self.ZEILENHOEHE + self._schub
+            farbe = QColor("#39ff14" if zeile.startswith("✓ ") else "#ff6b5b" if zeile.startswith("✗ ")
+                           else "#9a9eab" if zeile.startswith("• ") else "#f5a623")
+            farbe.setAlphaF(max(0.25, 1.0 - nummer * 0.17))
+            p.setPen(farbe)
+            text = p.fontMetrics().elidedText(zeile, Qt.ElideRight, int(feld.width()))
+            p.drawText(QRectF(feld.x(), y, feld.width(), self.ZEILENHOEHE), Qt.AlignLeft | Qt.AlignVCenter, text)
+        p.restore()
         # Fortschrittsbalken mit Prozent
         balken = QRectF(34, 296, 210, 6)
         p.setPen(Qt.NoPen)
@@ -353,10 +377,33 @@ class EinrichtFenster(QDialog):
             super().reject()
 
 
+def verbindungen(melde) -> None:
+    """Nur zur Anzeige im Splash: Was die App gleich braucht, ist es erreichbar? Nichts davon hält den Start auf."""
+    import httpx
+    from .. import quellen, suche
+    melde("… Öffne die Datenbank")
+    da = config.DATEN.exists() and any(config.DATEN.rglob("*.db"))
+    melde("✓ Datenbank: bereit" if da else "• Datenbank: wird beim Anmelden angelegt")
+    melde("… Verbinde mit der eigenen Suchmaschine (SearXNG)")
+    melde("✓ SearXNG: läuft" if quellen.finde_lokale_instanz() else "• SearXNG: nicht gestartet, Internet und Portale fehlen dann")
+    melde("… Verbinde mit der Jobbörse")
+    try:
+        antwort = httpx.get(suche.API, headers={"X-API-Key": suche.API_SCHLUESSEL},
+                            params={"was": "Test", "wo": "Berlin", "size": 1}, timeout=4)
+        melde("✓ Jobbörse: erreichbar" if antwort.status_code == 200 else f"• Jobbörse: meldet {antwort.status_code}")
+    except httpx.HTTPError:
+        melde("• Jobbörse: nicht erreichbar, offline?")
+
+
 def pruefe_im_hintergrund(pool, signale) -> None:
     def arbeit(s):
-        s.meldung.emit("Erkenne dein System …")
+        s.meldung.emit("… Erkenne dein System")
         info = system.erkenne(config.DATEN if config.DATEN.exists() else None)
-        s.meldung.emit(f"{info.name}: Prüfe Ollama, Modelle und mehr …")
-        return info, einrichtung.pruefe(info)
+        s.meldung.emit(f"✓ System: {info.name}")
+        pruefungen = einrichtung.pruefe(info, s.meldung.emit)
+        try:
+            verbindungen(s.meldung.emit)
+        except Exception as fehler:  # Anzeige, kein Startgrund
+            s.meldung.emit(f"• Verbindungen: {type(fehler).__name__}")
+        return info, pruefungen
     pool.start(_Arbeit(arbeit, signale))
