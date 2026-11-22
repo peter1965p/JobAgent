@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.9.1 – 2026-11-22
+
+### Geändert
+- Wohnungen: WBS-Angebote werden nicht mehr ausgeblendet. Neuer Schalter „Nur mit WBS“; ausgeblendet wird nur noch Tausch.
+
 ## 0.9.0 – 2026-11-22
 
 ### Neu

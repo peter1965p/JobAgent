@@ -2536,7 +2536,7 @@ class ProtokollSeite(Seite):
 class WohnungSeite(Seite):
     titel = "Wohnungen"
     untertitel = "Angebote aus deinen Suchaufträgen bei Immowelt, ImmoScout24, meinestadt und Kleinanzeigen, gefiltert für den Umzug"
-    MERKMAL_TEXT = {"balkon": "Balkon", "terrasse": "Terrasse", "garten": "Garten", "haustiere": "Haustiere", "einbaukueche": "Einbauküche"}
+    MERKMAL_TEXT = {"balkon": "Balkon", "terrasse": "Terrasse", "garten": "Garten", "haustiere": "Haustiere", "einbaukueche": "Einbauküche", "wbs": "Nur mit WBS"}
 
     def __init__(self, f):
         super().__init__(f)
@@ -2592,7 +2592,7 @@ class WohnungSeite(Seite):
             schalter.toggled.connect(self.filter_geaendert)
             reihe.addWidget(schalter)
             self.haken[code] = schalter
-        self.ohne_tausch = Schalter("Tausch und WBS ausblenden")
+        self.ohne_tausch = Schalter("Tausch ausblenden")
         self.ohne_tausch.toggled.connect(self.filter_geaendert)
         self.verworfene = Schalter("Verworfene zeigen")
         self.verworfene.toggled.connect(self.filter_geaendert)
@@ -2646,7 +2646,7 @@ class WohnungSeite(Seite):
             aktion.setChecked(name in fl.laender)
         for code, schalter in self.haken.items():
             schalter.setChecked(code in fl.merkmale)
-        self.ohne_tausch.setChecked(fl.ohne_tausch_wbs)
+        self.ohne_tausch.setChecked(fl.ohne_tausch)
         self.verworfene.setChecked(fl.verworfene)
         self.arbeit.setText("; ".join(wohnung.arbeitsorte(self.conn)))
         self._lade = False
@@ -2657,7 +2657,7 @@ class WohnungSeite(Seite):
         return wohnung.Filter(
             max_miete=self.miete.value(), min_zimmer=self.zimmer.value(), min_flaeche=self.flaeche.value(),
             laender=tuple(n for n, a in self.land_aktionen.items() if a.isChecked()), max_km=self.km.value(),
-            merkmale=tuple(c for c, s in self.haken.items() if s.isChecked()), ohne_tausch_wbs=self.ohne_tausch.isChecked(),
+            merkmale=tuple(c for c, s in self.haken.items() if s.isChecked()), ohne_tausch=self.ohne_tausch.isChecked(),
             verworfene=self.verworfene.isChecked())
 
     def _zeige_laender(self):
@@ -2719,7 +2719,7 @@ class WohnungSeite(Seite):
         merkmale = json.loads(z["merkmale"])
         teile = [f"Kalt {z['kalt']:.0f} €" if z["kalt"] else "", f"warm {z['warm']:.0f} €" if z["warm"] else "",
                  z["bundesland"], f"{z['km']} km bis {z['km_ziel']}" if z["km"] is not None else "",
-                 ", ".join(self.MERKMAL_TEXT.get(m, m.upper() if m == "wbs" else m.capitalize()) for m in merkmale)]
+                 ", ".join({"wbs": "WBS"}.get(m, self.MERKMAL_TEXT.get(m, m.capitalize())) for m in merkmale)]
         text = " · ".join(t for t in teile if t)
         if gruende:
             text += "\nPasst nicht: " + ", ".join(gruende)

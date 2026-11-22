@@ -98,11 +98,13 @@ def test_filter_gruende_und_reihenfolge(conn, monkeypatch):
     conn.commit()
     f = wohnung.Filter(max_miete=900, min_zimmer=2, min_flaeche=55, max_km=50)
     ergebnis = {z["titel"]: (ok, gruende) for z, ok, gruende in wohnung.liste(conn, f)}
-    # 485 € kalt + 62,36 m² × 2,80 € ≈ 660 € warm: passt bei der Miete, aber WBS
-    assert ergebnis["!!! 2-Zimmer !!! WBS für mind. 62 m² !!!"] == (False, ["WBS"])
+    # 485 € kalt + 62,36 m² × 2,80 € ≈ 660 € warm: passt, WBS ist kein Ausschluss
+    assert ergebnis["!!! 2-Zimmer !!! WBS für mind. 62 m² !!!"] == (True, [])
     assert ergebnis["Helle Wohnung mit Balkon"] == (False, ["1368 € warm"])
     assert ergebnis["[TAUSCHWOHNUNG] 2 zkb wohnung ohne balkon"] == (False, ["50 m²", "Tausch"])
     assert ergebnis["Gartenwohnung, Haustiere erlaubt"] == (False, ["Bayern"])
+    f.merkmale = ("wbs",)
+    assert wohnung.passt(next(z for z, _, _ in wohnung.liste(conn, f) if z["titel"].startswith("Helle")), f)[1][-1] == "ohne WBS"
     f.laender = ()
     f.merkmale = ("garten",)
     reihe = wohnung.liste(conn, f)
@@ -116,7 +118,7 @@ def test_filter_gruende_und_reihenfolge(conn, monkeypatch):
 def test_filter_und_arbeitsorte_bleiben_gespeichert(conn):
     wohnung.merke_filter(conn, wohnung.Filter(max_miete=800, laender=("Bremen",), merkmale=("balkon",)))
     f = wohnung.lade_filter(conn)
-    assert (f.max_miete, f.laender, f.merkmale, f.ohne_tausch_wbs) == (800, ("Bremen",), ("balkon",), True)
+    assert (f.max_miete, f.laender, f.merkmale, f.ohne_tausch) == (800, ("Bremen",), ("balkon",), True)
     wohnung.setze_arbeitsorte(conn, [" Musterstadt ", "", "12345 Beispieldorf"])
     assert wohnung.arbeitsorte(conn) == ["Musterstadt", "12345 Beispieldorf"]
 
@@ -189,7 +191,7 @@ def test_seite_zeigt_ampel_und_filtert(app_fenster):
     seite.aktualisieren()
     assert seite.tab.rowCount() == 4
     farben = [seite.tab.item(r, 0).data(fenster.Qt.UserRole + 1) for r in range(4)]
-    assert farben == [fenster.AMPEL["gruen"]] * 2 + [fenster.AMPEL["rot"]] * 2  # ohne Filter fallen nur WBS und Tausch raus
+    assert farben.count(fenster.AMPEL["gruen"]) == 3 and farben.count(fenster.AMPEL["rot"]) == 1  # ohne Filter fällt nur Tausch raus
     seite.miete.setValue(500)
     assert json.loads(db.einstellung(f.conn, "wohnung.filter", "{}"))["max_miete"] == 500
     assert [seite.tab.item(r, 0).data(fenster.Qt.UserRole + 1) for r in range(4)].count(fenster.AMPEL["gruen"]) == 0

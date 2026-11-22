@@ -45,7 +45,7 @@ KNOPF = re.compile(
     r"zimmer|kaltmiete|warmmiete|kaufpreis|nebenkosten|provisionsfrei|neu|top|anzeigen von unserem partner)$")
 MIETART = re.compile(r"(?i)^(kaltmiete|warmmiete|mietpreis|kaufpreis|gesamtmiete|miete)$")
 
-# Stichworte im Titel. „Tausch“ und „WBS“ sind für einen Umzug in der Regel nicht zu haben: Sie stehen als Warnung dabei.
+# Stichworte im Titel. „Tausch“ ist für einen Umzug nicht zu haben und wird ausgeblendet; „WBS“ ist ein normales Merkmal.
 MERKMALE = {
     "balkon": re.compile(r"(?i)balkon|loggia"),
     "terrasse": re.compile(r"(?i)terrasse"),
@@ -55,7 +55,7 @@ MERKMALE = {
     "tausch": re.compile(r"(?i)tausch"),
     "wbs": re.compile(r"(?i)\bwbs\b|wohnberechtigungsschein"),
 }
-WARNUNG = ("tausch", "wbs")
+WARNUNG = ("tausch",)
 
 
 def portal_der_mail(absender: str) -> Portal | None:
@@ -263,7 +263,7 @@ class Filter:
     laender: tuple[str, ...] = STANDARD_LAENDER
     max_km: int = 0             # 0 = egal
     merkmale: tuple[str, ...] = ()  # alle davon müssen im Titel stehen
-    ohne_tausch_wbs: bool = True
+    ohne_tausch: bool = True
     verworfene: bool = False
 
 
@@ -319,9 +319,9 @@ def passt(zeile, f: Filter) -> tuple[bool, list[str]]:
         gruende.append(f"{zeile['km']} km zur Arbeit")
     for m in f.merkmale:
         if m not in merkmale:
-            gruende.append(f"ohne {m}")
-    if f.ohne_tausch_wbs:
-        gruende += [m.upper() if m == "wbs" else "Tausch" for m in merkmale if m in WARNUNG]
+            gruende.append("ohne WBS" if m == "wbs" else f"ohne {m}")
+    if f.ohne_tausch and "tausch" in merkmale:
+        gruende.append("Tausch")
     return not gruende, gruende
 
 
