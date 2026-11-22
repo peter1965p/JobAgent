@@ -312,7 +312,10 @@ def _verbinde(p: Postfach, imap_klasse):
     raise SucheFehler(f"Postfach {p.name}: Der Server ist ohne Verschlüsselung eingetragen, dort meldet sich die App nicht an.")
 
 
-def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_klasse) -> tuple[str, list[tuple[int, bytes]]]:
+def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_klasse, absender=None,
+          tage: int | None = None) -> tuple[str, list[tuple[int, bytes]]]:
+    """Neue Mails der Absender (Standard: die Job-Portale) seit `tage` Tagen, schreibgeschützt und ohne sie als gelesen
+    zu markieren."""
     try:
         verbindung = _verbinde(p, imap_klasse)
     except (OSError, socket.timeout, imaplib.IMAP4.error) as fehler:
@@ -330,8 +333,8 @@ def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_kl
         if neu_validity != uidvalidity:
             letzte_uid = 0  # Der Server hat die Nummern neu vergeben, gemerkte gelten nicht mehr.
         uids: set[int] = set()
-        for portal in {q.absender for q in PORTALE}:
-            typ, daten = verbindung.uid("SEARCH", None, "SINCE", _seit(TAGE), "FROM", f'"{portal}"')
+        for portal in set(absender or {q.absender for q in PORTALE}):
+            typ, daten = verbindung.uid("SEARCH", None, "SINCE", _seit(tage or TAGE), "FROM", f'"{portal}"')
             if typ == "OK" and daten and daten[0]:
                 uids.update(int(u) for u in daten[0].split())
         offen = sorted(u for u in uids if u > letzte_uid)[-MAX_MAILS:]

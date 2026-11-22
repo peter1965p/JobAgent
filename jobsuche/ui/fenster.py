@@ -15,12 +15,12 @@ from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTime
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand
+from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand, wohnung
 from . import start, theme
 from .anmelden import AnmeldeFenster
 from .laufband import Laufband
@@ -553,15 +553,17 @@ class FirmenSeite(Seite):
 class PostfachDialog(QDialog):
     """Welche Posteingänge die App nach Job-Alerts durchsieht. Passwörter gehen in den Schlüsselbund."""
 
-    def __init__(self, parent, conn):
+    def __init__(self, parent, conn, titel="Postfächer für Job-Alerts", gewaehlte=None, waehle=None,
+                 was="Mails von Stellenportalen der letzten zwei Wochen"):
         super().__init__(parent)
-        self.setWindowTitle("Postfächer für Job-Alerts")
+        self.setWindowTitle(titel)
         self.setMinimumWidth(620)
+        self.waehle = waehle or postfach.waehle
         lage = QVBoxLayout(self)
-        lage.addWidget(label("Die App liest nur Mails von Stellenportalen der letzten zwei Wochen, schreibgeschützt: Ungelesenes bleibt "
+        lage.addWidget(label(f"Die App liest nur {was}, schreibgeschützt: Ungelesenes bleibt "
                              "ungelesen, gelöscht oder verschoben wird nichts, Links in den Mails ruft sie nie auf. Für Gmail-Konten "
                              "mit OAuth braucht es ein App-Passwort von Google.", "gedimmt", True))
-        gewaehlt = set(postfach.gewaehlte(conn))
+        gewaehlt = set((gewaehlte or postfach.gewaehlte)(conn))
         vorschlaege = list(dict.fromkeys(postfach.vorschlaege(conn) + list(gewaehlt)))
         raster = QGridLayout()
         self.zeilen = []
@@ -587,7 +589,7 @@ class PostfachDialog(QDialog):
         for p, haken, kennwort in self.zeilen:
             if haken.isChecked() and kennwort.text():
                 postfach.merke_passwort(p, kennwort.text())
-        postfach.waehle(conn, [p for p, haken, _ in self.zeilen if haken.isChecked()])
+        self.waehle(conn, [p for p, haken, _ in self.zeilen if haken.isChecked()])
 
 
 class SchluesselDialog(QDialog):
@@ -2531,10 +2533,239 @@ class ProtokollSeite(Seite):
         fuelle(self.tab, [(r["zeit"], r["aktion"], r["name"], r["detail"]) for r in reihen], [r["id"] for r in reihen])
 
 
+class WohnungSeite(Seite):
+    titel = "Wohnungen"
+    untertitel = "Angebote aus deinen Suchaufträgen bei Immowelt, ImmoScout24, meinestadt und Kleinanzeigen, gefiltert für den Umzug"
+    MERKMAL_TEXT = {"balkon": "Balkon", "terrasse": "Terrasse", "garten": "Garten", "haustiere": "Haustiere", "einbaukueche": "Einbauküche"}
+
+    def __init__(self, f):
+        super().__init__(f)
+        lage = QVBoxLayout(self)
+        lage.setContentsMargins(0, 0, 0, 0)
+        lage.setSpacing(18)
+        filter_karte = Karte("Filter")
+        reihe = QHBoxLayout()
+        self.miete = QSpinBox()
+        self.miete.setRange(0, 5000)
+        self.miete.setSingleStep(50)
+        self.miete.setPrefix("warm bis ")
+        self.miete.setSuffix(" €")
+        self.miete.setSpecialValueText("Miete egal")
+        self.miete.setToolTip("Ohne Warmmiete im Angebot: Kaltmiete plus geschätzt "
+                              f"{wohnung.NEBENKOSTEN_JE_M2:.2f} €/m² Nebenkosten und Heizung.")
+        self.zimmer = QSpinBox()
+        self.zimmer.setRange(0, 8)
+        self.zimmer.setPrefix("ab ")
+        self.zimmer.setSuffix(" Zimmer")
+        self.zimmer.setSpecialValueText("Zimmer egal")
+        self.flaeche = QSpinBox()
+        self.flaeche.setRange(0, 300)
+        self.flaeche.setSingleStep(5)
+        self.flaeche.setPrefix("ab ")
+        self.flaeche.setSuffix(" m²")
+        self.flaeche.setSpecialValueText("Fläche egal")
+        self.km = QSpinBox()
+        self.km.setRange(0, 500)
+        self.km.setSingleStep(5)
+        self.km.setPrefix("bis ")
+        self.km.setSuffix(" km zur Arbeit")
+        self.km.setSpecialValueText("Arbeitsweg egal")
+        self.laender = QPushButton("Bundesländer")
+        menue = QMenu(self.laender)
+        self.land_aktionen = {}
+        for name in wohnung.BUNDESLAENDER:
+            aktion = QAction(name, menue, checkable=True)
+            aktion.toggled.connect(self.filter_geaendert)
+            menue.addAction(aktion)
+            self.land_aktionen[name] = aktion
+        self.laender.setMenu(menue)
+        for w in (self.miete, self.zimmer, self.flaeche, self.km):
+            w.valueChanged.connect(self.filter_geaendert)
+            reihe.addWidget(w)
+        reihe.addWidget(self.laender)
+        reihe.addStretch()
+        filter_karte.lage.addLayout(reihe)
+        reihe = QHBoxLayout()
+        self.haken = {}
+        for code, text in self.MERKMAL_TEXT.items():
+            schalter = Schalter(text)
+            schalter.toggled.connect(self.filter_geaendert)
+            reihe.addWidget(schalter)
+            self.haken[code] = schalter
+        self.ohne_tausch = Schalter("Tausch und WBS ausblenden")
+        self.ohne_tausch.toggled.connect(self.filter_geaendert)
+        self.verworfene = Schalter("Verworfene zeigen")
+        self.verworfene.toggled.connect(self.filter_geaendert)
+        reihe.addWidget(self.ohne_tausch)
+        reihe.addWidget(self.verworfene)
+        reihe.addStretch()
+        filter_karte.lage.addLayout(reihe)
+        reihe = QHBoxLayout()
+        self.arbeit = QLineEdit()
+        self.arbeit.setPlaceholderText("Arbeitsorte, z. B. „28195 Bremen; Oldenburg“ – daraus wird die Fahrstrecke mit dem Auto")
+        self.arbeit.editingFinished.connect(self.arbeitsorte_geaendert)
+        reihe.addWidget(self.arbeit, 1)
+        reihe.addWidget(knopf("Postfächer …", self.postfaecher))
+        reihe.addWidget(knopf("Postfächer lesen", self.lesen, True))
+        filter_karte.lage.addLayout(reihe)
+        lage.addWidget(filter_karte)
+
+        ergebnis = Karte("Angebote")
+        self.stand = label("Noch nichts gelesen.", "gedimmt", True)
+        ergebnis.lage.addWidget(self.stand)
+        self.tab = tabelle(["", "Wohnung", "Ort", "Warm", "Zi.", "m²", "Weg", "Portal", "Seit"], [28, None, 210, 70, 45, 55, 65, 100, 80])
+        self.tab.itemSelectionChanged.connect(self.zeige)  # Reihenfolge kommt aus wohnung.liste: gemerkt, passend, neu
+        self.tab.itemDoubleClicked.connect(lambda *_: self.oeffnen())
+        ergebnis.lage.addWidget(self.tab, 1)
+        self.detail = label("", "gedimmt", True)
+        ergebnis.lage.addWidget(self.detail)
+        reihe = QHBoxLayout()
+        self.k_oeffnen = knopf("Anzeige öffnen", self.oeffnen, True)
+        self.k_merken = knopf("Merken", lambda: self.status("gemerkt"))
+        self.k_verwerfen = knopf("Verwerfen", lambda: self.status("verworfen"))
+        self.k_netz = knopf("Netz prüfen", self.netz)
+        self.k_netz.setToolTip("Öffnet den Breitbandatlas der Bundesnetzagentur (Glasfaser, Kabel, 5G) und legt die Adresse "
+                               "in die Zwischenablage: dort ins Suchfeld einfügen.")
+        for k in (self.k_oeffnen, self.k_merken, self.k_verwerfen, self.k_netz):
+            reihe.addWidget(k)
+        reihe.addStretch()
+        ergebnis.lage.addLayout(reihe)
+        lage.addWidget(ergebnis, 1)
+        self.zeilen: dict[str, object] = {}
+        self._lade = False
+
+    # --- Filter ---
+    def aktualisieren(self):
+        self._lade = True
+        fl = wohnung.lade_filter(self.conn)
+        self.miete.setValue(fl.max_miete)
+        self.zimmer.setValue(int(fl.min_zimmer))
+        self.flaeche.setValue(fl.min_flaeche)
+        self.km.setValue(fl.max_km)
+        for name, aktion in self.land_aktionen.items():
+            aktion.setChecked(name in fl.laender)
+        for code, schalter in self.haken.items():
+            schalter.setChecked(code in fl.merkmale)
+        self.ohne_tausch.setChecked(fl.ohne_tausch_wbs)
+        self.verworfene.setChecked(fl.verworfene)
+        self.arbeit.setText("; ".join(wohnung.arbeitsorte(self.conn)))
+        self._lade = False
+        self._zeige_laender()
+        self.fuellen()
+
+    def _filter(self):
+        return wohnung.Filter(
+            max_miete=self.miete.value(), min_zimmer=self.zimmer.value(), min_flaeche=self.flaeche.value(),
+            laender=tuple(n for n, a in self.land_aktionen.items() if a.isChecked()), max_km=self.km.value(),
+            merkmale=tuple(c for c, s in self.haken.items() if s.isChecked()), ohne_tausch_wbs=self.ohne_tausch.isChecked(),
+            verworfene=self.verworfene.isChecked())
+
+    def _zeige_laender(self):
+        an = [n for n, a in self.land_aktionen.items() if a.isChecked()]
+        self.laender.setText("Alle Bundesländer" if not an or len(an) == len(self.land_aktionen) else
+                             an[0] if len(an) == 1 else f"{len(an)} Bundesländer")
+        self.laender.setToolTip(", ".join(an) or "Alle")
+
+    def filter_geaendert(self, *_):
+        if self._lade:
+            return
+        wohnung.merke_filter(self.conn, self._filter())
+        self._zeige_laender()
+        self.fuellen()
+
+    def arbeitsorte_geaendert(self):
+        orte = [o for o in re.split(r"[;\n]", self.arbeit.text()) if o.strip()]
+        if orte == wohnung.arbeitsorte(self.conn):
+            return
+        wohnung.setze_arbeitsorte(self.conn, orte)
+        self.f.starte("Arbeitsweg berechnen", lambda conn, fort: wohnung.entfernungen(conn, melde=fort), nach=lambda _: self.fuellen())
+
+    # --- Liste ---
+    def fuellen(self):
+        eintraege = wohnung.liste(self.conn, self._filter())
+        self.zeilen = {z["kennung"]: (z, ok, gruende) for z, ok, gruende in eintraege}
+        passend = sum(1 for _, ok, _ in eintraege if ok)
+        neu = sum(1 for z, _, _ in eintraege if z["status"] == "neu" and z["zuerst"][:10] == datetime.now().date().isoformat())
+        self.stand.setText(f"{len(eintraege)} Angebote der letzten {wohnung.TAGE} Tage, {passend} passen"
+                           + (f", {neu} heute neu" if neu else "") + "." if eintraege else
+                           "Noch keine Angebote. Wähle die Postfächer mit deinen Suchaufträgen und lies sie.")
+        zeilen = []
+        for z, ok, _ in eintraege:
+            warm = wohnung.warmmiete(z)
+            schaetzung = "" if z["warm"] else "~"
+            zeilen.append(("", z["titel"], z["ort"], f"{schaetzung}{warm:.0f} €" if warm else "", f"{z['zimmer']:g}" if z["zimmer"] else "",
+                           f"{z['flaeche']:g}", f"{z['km']} km" if z["km"] is not None else "", z["portal"], z["datum"][8:10] + "." + z["datum"][5:7] + "."))
+        fuelle(self.tab, zeilen, list(self.zeilen))
+        # Runde Ampel wie in der Suche: grün passt, rot passt nicht, orange gemerkt
+        for r in range(self.tab.rowCount()):
+            item = self.tab.item(r, 0)
+            z, ok, gruende = self.zeilen[item.data(Qt.UserRole)]
+            farbe = "#f5a623" if z["status"] == "gemerkt" else AMPEL["gruen"] if ok else AMPEL["rot"]
+            item.setData(Qt.DecorationRole, ampel_icon(farbe))
+            item.setData(Qt.UserRole + 1, farbe)
+            item.setToolTip("Gemerkt" if z["status"] == "gemerkt" else "Passt" if ok else "Passt nicht: " + ", ".join(gruende))
+        self.zeige()
+
+    def _auswahl(self):
+        return self.zeilen.get(zeilen_id(self.tab))
+
+    def zeige(self):
+        e = self._auswahl()
+        for k in (self.k_oeffnen, self.k_merken, self.k_verwerfen, self.k_netz):
+            k.setEnabled(e is not None)
+        if not e:
+            return self.detail.setText("Doppelklick öffnet die Anzeige. Grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt; „~“ vor der Miete: warm geschätzt.")
+        z, ok, gruende = e
+        merkmale = json.loads(z["merkmale"])
+        teile = [f"Kalt {z['kalt']:.0f} €" if z["kalt"] else "", f"warm {z['warm']:.0f} €" if z["warm"] else "",
+                 z["bundesland"], f"{z['km']} km bis {z['km_ziel']}" if z["km"] is not None else "",
+                 ", ".join(self.MERKMAL_TEXT.get(m, m.upper() if m == "wbs" else m.capitalize()) for m in merkmale)]
+        text = " · ".join(t for t in teile if t)
+        if gruende:
+            text += "\nPasst nicht: " + ", ".join(gruende)
+        self.detail.setText(text)
+        self.k_merken.setText("Nicht mehr merken" if z["status"] == "gemerkt" else "Merken")
+        self.k_verwerfen.setText("Zurückholen" if z["status"] == "verworfen" else "Verwerfen")
+
+    def oeffnen(self):
+        e = self._auswahl()
+        if e and e[0]["url"]:
+            QDesktopServices.openUrl(QUrl(e[0]["url"]))
+
+    def status(self, neu):
+        e = self._auswahl()
+        if not e:
+            return
+        wohnung.setze_status(self.conn, e[0]["kennung"], "neu" if e[0]["status"] == neu else neu)
+        self.fuellen()
+
+    def netz(self):
+        e = self._auswahl()
+        if e:
+            QGuiApplication.clipboard().setText(wohnung.netz_adresse(e[0]))
+            QDesktopServices.openUrl(QUrl(wohnung.BREITBANDATLAS))
+
+    # --- Postfächer ---
+    def postfaecher(self):
+        dialog = PostfachDialog(self, self.conn, "Postfächer für Wohnungsangebote", wohnung.konten, wohnung.waehle_konten,
+                                "Mails von Immowelt, ImmoScout24, meinestadt und Kleinanzeigen der letzten 30 Tage")
+        if dialog.exec():
+            dialog.speichere(self.conn)
+
+    def lesen(self):
+        def fertig(ergebnis):
+            neu, hinweise = ergebnis
+            self.fuellen()
+            self.f.melde("\n".join([f"{neu} neue Angebote."] + hinweise)) if hinweise else self.stand.setText(
+                self.stand.text() + f" Gerade gelesen: {neu} neu.")
+        self.f.starte("Wohnungen lesen", lambda conn, fort: wohnung.lies(conn, melde=fort), nach=fertig)
+
+
 class Hauptfenster(QMainWindow):
     NAVIGATION = [
         ("ARBEIT", [StartSeite, BerichtSeite, SucheSeite, FirmenSeite, EntwurfSeite, GesendetSeite]),
         ("PROFIL", [ProfilSeite, FaktenSeite, UnterlagenSeite, CVSeite, AgendaSeite, MailkontoSeite]),
+        ("UMZUG", [WohnungSeite]),
         ("KI", [GelerntSeite, SystemSeite]),
         ("ARCHIV", [ProtokollSeite]),
     ]

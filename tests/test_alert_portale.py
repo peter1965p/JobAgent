@@ -78,7 +78,7 @@ def test_jobleads_titel_firma_ort_stehen_vor_dem_link():
 
 
 def test_xing_jobmails_ja_geburtstagsmails_nein():
-    html = ("<a href='https://www.xing.com/m/abcdefghijklmnA'>Im Browser ansehen</a><p>Hallo Peter,</p>"
+    html = ("<a href='https://www.xing.com/m/abcdefghijklmnA'>Im Browser ansehen</a><p>Hallo Erika,</p>"
             "<a href='https://www.xing.com/m/abcdefghijklmnB'>IT-Systemadministrator (m/w/d)</a><p>Muster KG</p><p>Bremen</p>"
             "<p>Vollzeit</p><p>42.000 € - 60.000 €</p>"
             "<a href='https://www.xing.com/m/abcdefghijklmnC'>Alle Vorschläge ansehen</a><p>Bist Du gerade auf Job-Suche?</p>"

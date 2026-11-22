@@ -1,5 +1,7 @@
 """Farben und Stylesheet, angelehnt an AI-Desc."""
 
+from pathlib import Path
+
 DUNKEL = {
     "bg": "#1a1c22", "sidebar": "#1c1e24", "karte": "#252833", "feld": "#1d1f26", "rand": "#383b47",
     "text": "#e7e8ec", "gedimmt": "#9a9eab", "akzent": "#f5a623", "aktiv": "#2c303b",
@@ -15,6 +17,11 @@ HELL = {
 
 
 AKTUELL = DUNKEL  # Für Links in Rich Text, die das Stylesheet nicht erreicht.
+
+
+# Qt zeichnet bei Zahlenfeldern keine CSS-Dreiecke wie bei Auswahllisten: zwei kleine SVG-Pfeile, grau für beide Themes
+PFEIL_HOCH = (Path(__file__).parent / "pfeil_hoch.svg").as_posix()
+PFEIL_RUNTER = (Path(__file__).parent / "pfeil_runter.svg").as_posix()
 
 
 def stylesheet(t: dict) -> str:
@@ -52,16 +59,17 @@ def stylesheet(t: dict) -> str:
     QDialog {{ background: {t['karte']}; }}
     QProgressBar {{ background: {t['feld']}; border: 1px solid {t['rand']}; border-radius: 6px; text-align: center; height: 16px; }}
     QProgressBar::chunk {{ background: {t['akzent']}; border-radius: 5px; }}
-    QLineEdit, QPlainTextEdit, QComboBox {{
+    QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {{
         background: {t['feld']}; border: 1px solid {t['rand']}; border-radius: 8px; padding: 7px 10px;
         selection-background-color: {t['akzent']}; selection-color: {t['auf_akzent']};
     }}
-    QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {t['akzent']}; }}
-    QComboBox::drop-down {{ border: none; width: 22px; }}
-    QComboBox::down-arrow {{
-        width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
-        border-top: 5px solid {t['gedimmt']};
-    }}
+    QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 1px solid {t['akzent']}; }}
+    QSpinBox {{ color: {t['text']}; padding-right: 22px; }}
+    QSpinBox::up-button, QSpinBox::down-button {{ border: none; width: 20px; height: 12px; background: transparent; }}
+    QSpinBox::up-button {{ subcontrol-position: top right; margin-top: 4px; }}
+    QSpinBox::down-button {{ subcontrol-position: bottom right; margin-bottom: 4px; }}
+    QSpinBox::up-arrow {{ image: url({PFEIL_HOCH}); width: 8px; height: 5px; }}
+    QSpinBox::down-arrow {{ image: url({PFEIL_RUNTER}); width: 8px; height: 5px; }}
     QComboBox QAbstractItemView {{ background: {t['karte']}; selection-background-color: {t['aktiv']}; }}
     QTableWidget, QListWidget {{
         background: transparent; border: none; gridline-color: transparent; outline: none;

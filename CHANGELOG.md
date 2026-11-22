@@ -2,6 +2,17 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.9.0 – 2026-11-22
+
+### Neu
+- **Wohnungen (Bereich „Umzug“):** Angebote aus den Suchauftrags-Mails von Immowelt, ImmoScout24, meinestadt und Kleinanzeigen, mit Kalt-/Warmmiete, Zimmern, Fläche, Ort und Portal. Eigene Postfach-Auswahl (z. B. ein zweites Konto nur für Kleinanzeigen), schreibgeschützt, Mails der letzten 30 Tage.
+- Filter: Warmmiete (ohne Angabe geschätzt: Kaltmiete + 2,80 €/m²), Zimmer, Fläche, Bundesländer (Vorauswahl NRW bis Norden), Arbeitsweg in km, Balkon/Terrasse/Garten/Haustiere/Einbauküche, Tausch- und WBS-Angebote ausblenden. Runde Ampel: grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt.
+- Arbeitsorte eintragen: Fahrstrecke mit dem Auto zum nächsten Arbeitsort (OSRM); Ort und Bundesland über Nominatim, zwischengespeichert.
+- Merken, Verwerfen, Anzeige öffnen, „Netz prüfen“ (Breitbandatlas, Adresse liegt in der Zwischenablage).
+
+### Behoben
+- Zahlenfelder (z. B. „höchstens … Tage alt“) hatten kein Theme und erschienen hell/grau; jetzt wie die übrigen Eingabefelder, mit eigenen Pfeilen.
+
 ## 0.8.0 – 2026-11-22
 
 ### Neu
