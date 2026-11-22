@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.10.0 – 2026-11-22
+
+### Neu
+- Wohnungen: Klick auf ein Angebot klappt animiert eine Vorschau auf, die die echte Portal-Anzeige mit Fotos und allen Daten im eingebauten Browser zeigt (Doppelklick öffnet sie weiterhin im System-Browser). Ohne QtWebEngine bleibt die App ohne Vorschau lauffähig.
+
 ## 0.9.1 – 2026-11-22
 
 ### Geändert

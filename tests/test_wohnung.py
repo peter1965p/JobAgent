@@ -200,6 +200,24 @@ def test_seite_zeigt_ampel_und_filtert(app_fenster):
     assert seite.tab.item(0, 0).data(fenster.Qt.UserRole + 1) == "#f5a623"
 
 
+def test_seite_klappt_vorschau_auf_und_zu(app_fenster):
+    f = app_fenster
+    from jobsuche.ui import fenster
+    if fenster.QWebEngineView is None:
+        import pytest
+        pytest.skip("Kein QtWebEngine in dieser Umgebung")
+    wohnung.speichere(f.conn, [{**a, "datum": __import__("datetime").date.today().isoformat()}
+                               for a in wohnung.angebote_aus_mail(IS24)])
+    f.zeige_seite(fenster.WohnungSeite)
+    seite = f.stapel.currentWidget()
+    seite.aktualisieren()
+    seite.tab.selectRow(0)  # Klick lädt die Anzeige und klappt das Panel auf
+    assert seite._web_url == seite._auswahl()[0]["url"] and seite._web_url
+    assert seite.anim.endValue() == seite.ZIEL_HOEHE
+    seite.tab.clearSelection()  # ohne Auswahl klappt es wieder zu
+    assert seite.anim.endValue() == 0 and seite._web_url == ""
+
+
 @pytest.fixture
 def app_fenster(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication

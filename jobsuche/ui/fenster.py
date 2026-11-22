@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -19,6 +19,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
+
+try:  # Eingebauter Browser für die Wohnungs-Vorschau; fehlt er, bleibt die App ohne Vorschau lauffähig.
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+except ImportError:  # pragma: no cover - hängt von der Qt-Installation ab
+    QWebEngineView = None
 
 from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand, wohnung
 from . import start, theme
@@ -2617,6 +2622,21 @@ class WohnungSeite(Seite):
         self.tab.itemSelectionChanged.connect(self.zeige)  # Reihenfolge kommt aus wohnung.liste: gemerkt, passend, neu
         self.tab.itemDoubleClicked.connect(lambda *_: self.oeffnen())
         ergebnis.lage.addWidget(self.tab, 1)
+        # Vorschau: beim Anklicken klappt die echte Anzeige animiert nach unten auf (Fotos und Daten).
+        self.vorschau = QFrame()
+        self.vorschau.setObjectName("wohnungvorschau")
+        self.vorschau.setMaximumHeight(0)
+        vlage = QVBoxLayout(self.vorschau)
+        vlage.setContentsMargins(0, 10, 0, 0)
+        vlage.setSpacing(0)
+        self.web = QWebEngineView() if QWebEngineView is not None else None
+        if self.web is not None:
+            vlage.addWidget(self.web)
+        self.anim = QPropertyAnimation(self.vorschau, b"maximumHeight", self)
+        self.anim.setDuration(360)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._web_url = ""
+        ergebnis.lage.addWidget(self.vorschau)
         self.detail = label("", "gedimmt", True)
         ergebnis.lage.addWidget(self.detail)
         reihe = QHBoxLayout()
@@ -2714,8 +2734,10 @@ class WohnungSeite(Seite):
         for k in (self.k_oeffnen, self.k_merken, self.k_verwerfen, self.k_netz):
             k.setEnabled(e is not None)
         if not e:
-            return self.detail.setText("Doppelklick öffnet die Anzeige. Grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt; „~“ vor der Miete: warm geschätzt.")
+            self._klappe_zu()
+            return self.detail.setText("Klick öffnet die Anzeige mit Fotos. Grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt; „~“ vor der Miete: warm geschätzt.")
         z, ok, gruende = e
+        self._vorschau(z["url"])
         merkmale = json.loads(z["merkmale"])
         teile = [f"Kalt {z['kalt']:.0f} €" if z["kalt"] else "", f"warm {z['warm']:.0f} €" if z["warm"] else "",
                  z["bundesland"], f"{z['km']} km bis {z['km_ziel']}" if z["km"] is not None else "",
@@ -2726,6 +2748,34 @@ class WohnungSeite(Seite):
         self.detail.setText(text)
         self.k_merken.setText("Nicht mehr merken" if z["status"] == "gemerkt" else "Merken")
         self.k_verwerfen.setText("Zurückholen" if z["status"] == "verworfen" else "Verwerfen")
+
+    # --- Vorschau (klappt animiert auf) ---
+    ZIEL_HOEHE = 480
+
+    def _vorschau(self, url):
+        if self.web is None or not url:  # Ohne Browser oder URL keine Vorschau, aber Panel sauber schließen.
+            return self._klappe_zu()
+        if url != self._web_url:
+            self._web_url = url
+            self.web.setUrl(QUrl(url))
+        self._klappe_auf()
+
+    def _klappe_auf(self):
+        if self.vorschau.maximumHeight() >= self.ZIEL_HOEHE:
+            return
+        self.anim.stop()
+        self.anim.setStartValue(self.vorschau.maximumHeight())
+        self.anim.setEndValue(self.ZIEL_HOEHE)
+        self.anim.start()
+
+    def _klappe_zu(self):
+        self._web_url = ""
+        if self.web is not None:
+            self.web.setUrl(QUrl("about:blank"))
+        self.anim.stop()
+        self.anim.setStartValue(self.vorschau.maximumHeight())
+        self.anim.setEndValue(0)
+        self.anim.start()
 
     def oeffnen(self):
         e = self._auswahl()

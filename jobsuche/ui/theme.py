@@ -42,6 +42,7 @@ def stylesheet(t: dict) -> str:
     #avatar {{ background: {t['akzent']}; color: {t['auf_akzent']}; border-radius: 17px; font-weight: 700; }}
     #titel {{ font-size: 21px; font-weight: 700; }}
     #karte {{ background: {t['karte']}; border: 1px solid {t['rand']}; border-radius: 12px; }}
+    #wohnungvorschau {{ background: {t['bg']}; border: 1px solid {t['rand']}; border-radius: 10px; }}
     #karteTitel {{ font-size: 14px; font-weight: 700; }}
     #pill {{ background: {t['ok_bg']}; color: {t['ok']}; border-radius: 13px; padding: 5px 16px; }}
     #pillBeschaeftigt {{ background: {t['warn_bg']}; color: {t['warn']}; border-radius: 13px; padding: 5px 16px; }}
