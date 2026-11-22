@@ -2,6 +2,12 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.11.0 – 2026-11-22
+
+### Geändert
+- Wohnungen: Die Anzeige fährt jetzt wie ein Rollo direkt unter der angeklickten Zeile herunter und liegt über den Zeilen darunter (Kopf mit Titel, „Im Browser öffnen“, „Schließen ▲“). Nochmal Klick fährt es hoch.
+- meinestadt entfernt (dort laufen keine Suchaufträge mehr); gelesen werden Immowelt, ImmoScout24 und Kleinanzeigen.
+
 ## 0.10.0 – 2026-11-22
 
 ### Neu

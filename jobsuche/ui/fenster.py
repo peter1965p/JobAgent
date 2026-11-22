@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QRect, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -2540,7 +2540,7 @@ class ProtokollSeite(Seite):
 
 class WohnungSeite(Seite):
     titel = "Wohnungen"
-    untertitel = "Angebote aus deinen Suchaufträgen bei Immowelt, ImmoScout24, meinestadt und Kleinanzeigen, gefiltert für den Umzug"
+    untertitel = "Angebote aus deinen Suchaufträgen bei Immowelt, ImmoScout24 und Kleinanzeigen, gefiltert für den Umzug"
     MERKMAL_TEXT = {"balkon": "Balkon", "terrasse": "Terrasse", "garten": "Garten", "haustiere": "Haustiere", "einbaukueche": "Einbauküche", "wbs": "Nur mit WBS"}
 
     def __init__(self, f):
@@ -2622,21 +2622,32 @@ class WohnungSeite(Seite):
         self.tab.itemSelectionChanged.connect(self.zeige)  # Reihenfolge kommt aus wohnung.liste: gemerkt, passend, neu
         self.tab.itemDoubleClicked.connect(lambda *_: self.oeffnen())
         ergebnis.lage.addWidget(self.tab, 1)
-        # Vorschau: beim Anklicken klappt die echte Anzeige animiert nach unten auf (Fotos und Daten).
-        self.vorschau = QFrame()
-        self.vorschau.setObjectName("wohnungvorschau")
-        self.vorschau.setMaximumHeight(0)
-        vlage = QVBoxLayout(self.vorschau)
-        vlage.setContentsMargins(0, 10, 0, 0)
-        vlage.setSpacing(0)
+        # Rollo: Klick auf eine Wohnung lässt direkt unter ihrer Zeile die echte Anzeige (Fotos, Daten, Kontakt)
+        # animiert herunterfahren; es liegt über den Zeilen darunter. Nochmal Klick oder „Schließen“ fährt es hoch.
+        self.rollo = QFrame(self.tab.viewport())
+        self.rollo.setObjectName("wohnungvorschau")
+        self.rollo.hide()
+        rlage = QVBoxLayout(self.rollo)
+        rlage.setContentsMargins(1, 0, 1, 1)
+        rlage.setSpacing(0)
+        kopf = QHBoxLayout()
+        kopf.setContentsMargins(12, 6, 6, 6)
+        self.rollo_titel = label("", "karteTitel")
+        kopf.addWidget(self.rollo_titel, 1)
+        kopf.addWidget(knopf("Im Browser öffnen", self.oeffnen))
+        kopf.addWidget(knopf("Schließen ▲", self._rollo_zu))
+        rlage.addLayout(kopf)
         self.web = QWebEngineView() if QWebEngineView is not None else None
-        if self.web is not None:
-            vlage.addWidget(self.web)
-        self.anim = QPropertyAnimation(self.vorschau, b"maximumHeight", self)
-        self.anim.setDuration(360)
+        rlage.addWidget(self.web if self.web is not None else label("Kein eingebauter Browser installiert.", "gedimmt"), 1)
+        self.anim = QPropertyAnimation(self.rollo, b"geometry", self)
+        self.anim.setDuration(380)
         self.anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.anim.finished.connect(self._rollo_fertig)
+        self._rollo_zeile = None
         self._web_url = ""
-        ergebnis.lage.addWidget(self.vorschau)
+        self.tab.cellClicked.connect(self._klick)
+        self.tab.verticalScrollBar().valueChanged.connect(self._rollo_nachfuehren)
+        self.tab.viewport().installEventFilter(self)
         self.detail = label("", "gedimmt", True)
         ergebnis.lage.addWidget(self.detail)
         reihe = QHBoxLayout()
@@ -2702,6 +2713,10 @@ class WohnungSeite(Seite):
 
     # --- Liste ---
     def fuellen(self):
+        if getattr(self, "_rollo_zeile", None) is not None:
+            self._rollo_zeile = None
+            self.anim.stop()
+            self._rollo_fertig()
         eintraege = wohnung.liste(self.conn, self._filter())
         self.zeilen = {z["kennung"]: (z, ok, gruende) for z, ok, gruende in eintraege}
         passend = sum(1 for _, ok, _ in eintraege if ok)
@@ -2734,10 +2749,8 @@ class WohnungSeite(Seite):
         for k in (self.k_oeffnen, self.k_merken, self.k_verwerfen, self.k_netz):
             k.setEnabled(e is not None)
         if not e:
-            self._klappe_zu()
-            return self.detail.setText("Klick öffnet die Anzeige mit Fotos. Grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt; „~“ vor der Miete: warm geschätzt.")
+            return self.detail.setText("Klick lässt die Anzeige mit Fotos herunterfahren, nochmal Klick fährt sie hoch. Grün passt, rot passt nicht (Grund im Tooltip), orange gemerkt; „~“ vor der Miete: warm geschätzt.")
         z, ok, gruende = e
-        self._vorschau(z["url"])
         merkmale = json.loads(z["merkmale"])
         teile = [f"Kalt {z['kalt']:.0f} €" if z["kalt"] else "", f"warm {z['warm']:.0f} €" if z["warm"] else "",
                  z["bundesland"], f"{z['km']} km bis {z['km_ziel']}" if z["km"] is not None else "",
@@ -2749,33 +2762,63 @@ class WohnungSeite(Seite):
         self.k_merken.setText("Nicht mehr merken" if z["status"] == "gemerkt" else "Merken")
         self.k_verwerfen.setText("Zurückholen" if z["status"] == "verworfen" else "Verwerfen")
 
-    # --- Vorschau (klappt animiert auf) ---
-    ZIEL_HOEHE = 480
+    # --- Rollo unter der angeklickten Zeile ---
+    def _klick(self, zeile, _spalte):
+        if self._rollo_zeile == zeile:
+            return self._rollo_zu()
+        self._rollo_auf(zeile)
 
-    def _vorschau(self, url):
-        if self.web is None or not url:  # Ohne Browser oder URL keine Vorschau, aber Panel sauber schließen.
-            return self._klappe_zu()
-        if url != self._web_url:
-            self._web_url = url
-            self.web.setUrl(QUrl(url))
-        self._klappe_auf()
+    def _rollo_rechteck(self, zeile):
+        r = self.tab.visualRect(self.tab.model().index(zeile, 0))
+        y = r.bottom() + 1
+        return QRect(0, y, self.tab.viewport().width(), max(0, self.tab.viewport().height() - y))
 
-    def _klappe_auf(self):
-        if self.vorschau.maximumHeight() >= self.ZIEL_HOEHE:
+    def _rollo_auf(self, zeile):
+        e = self.zeilen.get(self.tab.item(zeile, 0).data(Qt.UserRole))
+        if not e or not e[0]["url"] or self.web is None:
+            return self._rollo_zu()
+        z = e[0]
+        self.tab.scrollToItem(self.tab.item(zeile, 0), QAbstractItemView.PositionAtTop)  # Platz zum Herunterfahren
+        if z["url"] != self._web_url:
+            self._web_url = z["url"]
+            self.web.setUrl(QUrl(z["url"]))
+        self.rollo_titel.setText(z["titel"])
+        war_offen = self._rollo_zeile is not None
+        self._rollo_zeile = zeile
+        ziel = self._rollo_rechteck(zeile)
+        self.anim.stop()
+        self.anim.setStartValue(QRect(ziel.x(), ziel.y(), ziel.width(), self.rollo.height() if war_offen else 0))
+        self.anim.setEndValue(ziel)
+        self.rollo.setGeometry(self.anim.startValue())
+        self.rollo.show()
+        self.rollo.raise_()
+        self.anim.start()
+
+    def _rollo_zu(self):
+        if self._rollo_zeile is None:
             return
+        self._rollo_zeile = None
+        g = self.rollo.geometry()
         self.anim.stop()
-        self.anim.setStartValue(self.vorschau.maximumHeight())
-        self.anim.setEndValue(self.ZIEL_HOEHE)
+        self.anim.setStartValue(g)
+        self.anim.setEndValue(QRect(g.x(), g.y(), g.width(), 0))
         self.anim.start()
 
-    def _klappe_zu(self):
-        self._web_url = ""
-        if self.web is not None:
-            self.web.setUrl(QUrl("about:blank"))
-        self.anim.stop()
-        self.anim.setStartValue(self.vorschau.maximumHeight())
-        self.anim.setEndValue(0)
-        self.anim.start()
+    def _rollo_fertig(self):
+        if self._rollo_zeile is None:
+            self.rollo.hide()
+            self._web_url = ""
+            if self.web is not None:
+                self.web.setUrl(QUrl("about:blank"))
+
+    def _rollo_nachfuehren(self, *_):
+        if self._rollo_zeile is not None and self.anim.state() != QPropertyAnimation.Running:
+            self.rollo.setGeometry(self._rollo_rechteck(self._rollo_zeile))
+
+    def eventFilter(self, objekt, ereignis):
+        if objekt is self.tab.viewport() and ereignis.type() == QEvent.Resize:
+            self._rollo_nachfuehren()
+        return super().eventFilter(objekt, ereignis)
 
     def oeffnen(self):
         e = self._auswahl()
@@ -2798,7 +2841,7 @@ class WohnungSeite(Seite):
     # --- Postfächer ---
     def postfaecher(self):
         dialog = PostfachDialog(self, self.conn, "Postfächer für Wohnungsangebote", wohnung.konten, wohnung.waehle_konten,
-                                "Mails von Immowelt, ImmoScout24, meinestadt und Kleinanzeigen der letzten 30 Tage")
+                                "Mails von Immowelt, ImmoScout24 und Kleinanzeigen der letzten 30 Tage")
         if dialog.exec():
             dialog.speichere(self.conn)
 

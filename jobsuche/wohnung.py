@@ -1,4 +1,4 @@
-"""Wohnungssuche für den Umzug: Angebote aus den Suchauftrags-Mails von Immowelt, ImmoScout24, meinestadt und
+"""Wohnungssuche für den Umzug: Angebote aus den Suchauftrags-Mails von Immowelt, ImmoScout24 und
 Kleinanzeigen. Die Portale selbst sperren Abfragen von Programmen, ihre Mails nicht.
 
 Jede Mail enthält eine oder mehrere Karten (Titel, Preis, Fläche, Zimmer, Ort). Die Portale ordnen die Zeilen
@@ -30,7 +30,6 @@ class Portal:
 PORTALE = (
     Portal("Immowelt", "immowelt.de"),
     Portal("ImmoScout24", "immobilienscout24.de"),
-    Portal("meinestadt", "meinestadt.de"),
     Portal("Kleinanzeigen", "kleinanzeigen.de"),
 )
 
@@ -140,7 +139,7 @@ def angebot_aus_karte(karte: Tag, portal: Portal) -> dict | None:
         return None  # Kopf der Mail („Wohnung • bis 65 m²“) oder Werbung, kein Angebot
     zimmer = ZIMMER.search(voll)
     anzahl = _zahl(zimmer.group(1)) if zimmer else None
-    if anzahl is None:  # meinestadt: „2“ und darunter „Zimmer“
+    if anzahl is None:  # z. B. „2“ und darunter „Zimmer“
         for i, z in enumerate(texte[:-1]):
             if re.fullmatch(r"\d{1,2}(?:,5)?", z) and texte[i + 1].lower() == "zimmer":
                 anzahl = _zahl(z)

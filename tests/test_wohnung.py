@@ -1,4 +1,4 @@
-"""Wohnungssuche: Angebote aus Suchauftrags-Mails (nachgebaut im Aufbau von Immowelt, ImmoScout24 und meinestadt),
+"""Wohnungssuche: Angebote aus Suchauftrags-Mails (nachgebaut im Aufbau von Immowelt, ImmoScout24 und Kleinanzeigen),
 Speichern, Filter, Postfach-Abruf mit Fake-Server und die Seite. Kein Test erreicht echte Server."""
 
 import json
@@ -38,11 +38,11 @@ IS24 = _mail("ImmoScout24 <myscout@immobilienscout24.de>", (
     "<table><tr><td><a href='https://push.search.is24.de/email/expose/222222222?PID=1'>Helle Wohnung mit Balkon</a>"
     "<p>1.150 €</p><p>78 m²</p><p>3 Zi.</p><p>Beispielweg 3, Altstadt, Beispielstadt</p></td></tr></table>"))
 
-MEINESTADT = _mail("immobilien@meinestadt.de", (
+KLEIN = _mail("Kleinanzeigen <suchauftrag@kleinanzeigen.de>", (
     "<p>Dein Suchauftrag</p><p>in Musterstadt und 50 km Umkreis: Mietwohnungen, bis 400 EUR, ab 50 m²</p>"
-    "<table><tr><td><a href='http://mail.meinestadt.de/track/click/1'>[TAUSCHWOHNUNG] 2 zkb wohnung ohne balkon</a>"
+    "<table><tr><td><a href='https://www.kleinanzeigen.de/s-anzeige/wohnung/1'>[TAUSCHWOHNUNG] 2 zkb wohnung ohne balkon</a>"
     "<p>12345 Musterstadt</p><p>400 €</p><p>Mietpreis</p><p>50 m²</p><p>Wohnfläche</p><p>2</p><p>Zimmer</p></td></tr>"
-    "<tr><td><a href='http://mail.meinestadt.de/track/click/2'>Gartenwohnung, Haustiere erlaubt</a>"
+    "<tr><td><a href='https://www.kleinanzeigen.de/s-anzeige/wohnung/2'>Gartenwohnung, Haustiere erlaubt</a>"
     "<p>12346 Beispieldorf</p><p>520 €</p><p>Mietpreis</p><p>64 m²</p><p>Wohnfläche</p><p>2,5</p><p>Zimmer</p></td></tr></table>"))
 
 
@@ -62,8 +62,8 @@ def test_immoscout24_kopf_ist_kein_angebot_titel_mit_m2_bleibt_titel():
     assert angebote[0]["merkmale"] == ["wbs"] and angebote[1]["merkmale"] == ["balkon"]
 
 
-def test_meinestadt_zimmer_in_eigener_zeile_und_ohne_balkon_zaehlt_nicht():
-    a, b = wohnung.angebote_aus_mail(MEINESTADT)
+def test_kleinanzeigen_zimmer_in_eigener_zeile_und_ohne_balkon_zaehlt_nicht():
+    a, b = wohnung.angebote_aus_mail(KLEIN)
     assert (a["ort"], a["kalt"], a["flaeche"], a["zimmer"], a["merkmale"]) == ("12345 Musterstadt", 400, 50, 2, ["tausch"])
     assert (b["zimmer"], b["merkmale"]) == (2.5, ["garten", "haustiere"])
 
@@ -92,7 +92,7 @@ def test_speichern_bewahrt_status_und_frischt_preis_auf(conn):
 
 def test_filter_gruende_und_reihenfolge(conn, monkeypatch):
     monkeypatch.setattr(wohnung, "TAGE", 100000)
-    wohnung.speichere(conn, wohnung.angebote_aus_mail(IS24) + wohnung.angebote_aus_mail(MEINESTADT))
+    wohnung.speichere(conn, wohnung.angebote_aus_mail(IS24) + wohnung.angebote_aus_mail(KLEIN))
     conn.execute("UPDATE wohnungen SET bundesland = 'Bayern' WHERE titel LIKE 'Garten%'")
     conn.execute("UPDATE wohnungen SET km = 30, km_ziel = 'Musterstadt' WHERE kennung LIKE 'is24%'")
     conn.commit()
@@ -163,7 +163,7 @@ class FakeImap:
 
 
 def test_lesen_aus_postfach_nur_wohnungsportale_und_nur_einmal(conn, monkeypatch):
-    FakeImap.mails = {1: _immowelt("516 €", "Wohnung mit Terrasse", "2 Zimmer · 62 m²", "Nord, Musterstadt (45739)"), 2: MEINESTADT}
+    FakeImap.mails = {1: _immowelt("516 €", "Wohnung mit Terrasse", "2 Zimmer · 62 m²", "Nord, Musterstadt (45739)"), 2: KLEIN}
     FakeImap.suchen = []
     monkeypatch.setattr(postfach, "passwort", lambda conn, p: "geheim")
     monkeypatch.setattr(wohnung, "verorte", lambda *a, **k: 0)
@@ -185,7 +185,7 @@ def test_seite_zeigt_ampel_und_filtert(app_fenster):
     f = app_fenster
     from jobsuche.ui import fenster
     wohnung.speichere(f.conn, [{**a, "datum": __import__("datetime").date.today().isoformat()}
-                               for a in wohnung.angebote_aus_mail(IS24) + wohnung.angebote_aus_mail(MEINESTADT)])
+                               for a in wohnung.angebote_aus_mail(IS24) + wohnung.angebote_aus_mail(KLEIN)])
     f.zeige_seite(fenster.WohnungSeite)
     seite = f.stapel.currentWidget()
     seite.aktualisieren()
@@ -211,11 +211,15 @@ def test_seite_klappt_vorschau_auf_und_zu(app_fenster):
     f.zeige_seite(fenster.WohnungSeite)
     seite = f.stapel.currentWidget()
     seite.aktualisieren()
-    seite.tab.selectRow(0)  # Klick lädt die Anzeige und klappt das Panel auf
-    assert seite._web_url == seite._auswahl()[0]["url"] and seite._web_url
-    assert seite.anim.endValue() == seite.ZIEL_HOEHE
-    seite.tab.clearSelection()  # ohne Auswahl klappt es wieder zu
-    assert seite.anim.endValue() == 0 and seite._web_url == ""
+    seite._klick(0, 1)  # Klick auf die Zeile: die Anzeige lädt, das Rollo fährt unter der Zeile herunter
+    assert seite._web_url and seite._rollo_zeile == 0 and not seite.rollo.isHidden()
+    ziel = seite.anim.endValue()
+    zeile = seite.tab.visualRect(seite.tab.model().index(0, 0))
+    assert ziel.y() == zeile.bottom() + 1 and ziel.height() > 0
+    seite._klick(0, 1)  # nochmal Klick: es fährt hoch
+    assert seite._rollo_zeile is None and seite.anim.endValue().height() == 0
+    seite.anim.setCurrentTime(seite.anim.duration())
+    assert seite.rollo.isHidden() and seite._web_url == ""
 
 
 @pytest.fixture
