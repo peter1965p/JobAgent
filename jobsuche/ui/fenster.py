@@ -1334,7 +1334,7 @@ class SucheSeite(Seite):
         # Stellen aus Alerts, Portalen und Aggregatoren. Diese Quellen liefern auch Fremdes, die Stichwörter sortieren es aus.
         reihe_stellen = QHBoxLayout()
         self.q_postfach = Schalter("Job-Alerts")
-        self.q_postfach.setToolTip("Liest Alert-Mails von LinkedIn, Indeed, StepStone, XING, Interamt und anderen aus deinem Postfach.")
+        self.q_postfach.setToolTip("Liest Alert-Mails von LinkedIn, Indeed, StepStone, XING, Glassdoor, JobLeads, Jobs für Niedersachsen, Interamt, heise jobs und der Jobbörse aus deinem Postfach.")
         self.q_portale = Schalter("Portale")
         self.q_portale.setToolTip("LinkedIn, StepStone und get in IT über SearXNG. Bei get in IT liest die App danach die öffentliche Anzeigenseite für Ort, Datum und Website.")
         self.q_adzuna = Schalter("Adzuna")

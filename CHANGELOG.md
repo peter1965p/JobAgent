@@ -2,6 +2,18 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.8.0 – 2026-11-22
+
+### Neu
+- **Job-Alerts: Glassdoor und JobLeads.** Glassdoor-Mails (Firma, Bewertung, Titel, Ort) und JobLeads-Mails (Titel, Firma und Ort stehen vor „Job ansehen“) werden ausgewertet, mit fester Kennung gegen Doppelte; JobLeads „Deutschland | Remote“ zählt als Remote.
+- **XING-Jobmails** (jobs@mail.xing.com) mit ihren Kurzlinks werden gelesen; Geburtstags- und Kontaktmails von XING bleiben außen vor.
+
+### Behoben
+- Job-Alerts: Echte Mails setzen jede Zeile einer Karte (Titel, „Firma · Ort“, „Einfach bewerben“) in einen eigenen Link. Bisher wurde jede Zeile zur eigenen „Stelle“ (LinkedIn: „Firma · Ort“ als Titel). Jetzt gehört alles mit derselben Kennung zu einer Stelle.
+- Job-Alerts: Outlook-Kommentare (`[if mso]…`) landeten als Firmen- und Ortszeilen in den Stellen.
+- Job-Alerts Indeed: Die Links sind in cts.indeed.com verpackt (gzip + base64) und werden ausgepackt. Profil-Links („Pendelzeit“, „Arbeitsort“, „Mindestgrundgehalt“) sind keine Stellen mehr; gesponserte Stellen bekommen ihre Anzeigen-Kennung.
+- Job-Alerts StepStone/XING: „I'm interested“, „Because you viewed“, „Report this job“, „Im Browser ansehen“, „Alle Vorschläge ansehen“ und Fußzeilen werden nicht mehr als Stellen gelesen.
+
 ## 0.7.0 – 2026-11-21
 
 ### Neu
