@@ -51,8 +51,13 @@ def homeoffice(stelle: dict) -> tuple[str, bool]:
     return "Homeoffice nach Vereinbarung", False
 
 
+JOBBOERSE_SEITEN = 2  # Seiten à 100 Anzeigen je Suchwort; die Börse liefert ohne Sperre, gemessen 3x so viele Stellen wie eine Seite à 50
+JOBBOERSE_GROESSE = 100
+MAX_TREFFER = 200  # Vorgabe für „Maximale Treffer je Suche“; die Liste zeigt sie in Seiten
+
+
 def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None = None, arbeitszeit: str = "",
-          max_tage: int = 0, seiten: int = 1, groesse: int = 50) -> list[dict]:
+          max_tage: int = 0, seiten: int = JOBBOERSE_SEITEN, groesse: int = JOBBOERSE_GROESSE) -> list[dict]:
     """`begriffe` darf mehrere Suchwörter enthalten, durch Kommas getrennt. `max_tage` 0 heißt: jedes Alter."""
     woerter = [b.strip() for b in begriffe.split(",") if b.strip()]
     if not woerter or not wo.strip():
@@ -63,7 +68,10 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
     if max_tage:
         # Die Börse filtert nach dem aktuellen Zeitraum. Aufgefrischte alte Anzeigen fängt danach `zu_alt` ab.
         filter_zeit["veroeffentlichtseit"] = min(max_tage, 100)
+    erschoepft: set[str] = set()  # Suchwörter, deren letzte Seite schon da war: keine leeren Folgeabfragen
     for wort, seite in ((w, s) for w in woerter for s in range(1, seiten + 1)):
+        if wort in erschoepft:
+            continue
         try:
             antwort = client.get(API, headers={"X-API-Key": API_SCHLUESSEL}, params={
                 "was": wort, "wo": wo.strip(), "umkreis": umkreis, "size": groesse, "page": seite, "angebotsart": 1, "pav": "false",
@@ -73,7 +81,12 @@ def suche(begriffe: str, wo: str, umkreis: int = 50, client: httpx.Client | None
             raise SucheFehler(f"Die Jobbörse ist nicht erreichbar: {fehler}") from fehler
         if antwort.status_code != 200:
             raise SucheFehler(f"Die Jobbörse meldet {antwort.status_code}. Vielleicht hat sich die Schnittstelle geändert.")
-        for stelle in antwort.json().get("ergebnisliste", []):
+        daten = antwort.json()
+        liste = daten.get("ergebnisliste", []) or []
+        gesamt = daten.get("maxErgebnisse")
+        if len(liste) < groesse or (isinstance(gesamt, int) and seite * groesse >= gesamt):
+            erschoepft.add(wort)
+        for stelle in liste:
             referenz = stelle.get("referenznummer", "")
             firma = str(stelle.get("firma", "")).strip()
             if not referenz or not firma or referenz in treffer or VERMITTLER.search(firma):
@@ -582,7 +595,21 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         treffer = [t for t in mit_ki_signalen(conn, treffer, melde, client) if t.get("ki")]
         hinweise.append(f"KI erwünscht: {len(treffer)} von {vorher} Anzeigen nennen KI-Werkzeuge oder KI-Arbeit.")
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
-    return {"treffer": bewerte_naehe(conn, treffer), "hinweise": hinweise, "branche": branche}
+    treffer = bewerte_naehe(conn, treffer)
+    grenze = max_treffer(conn)
+    if len(treffer) > grenze:
+        hinweise.append(f"Treffer: {len(treffer)} gefunden, die besten {grenze} stehen in der Liste (Grenze unter „Maximale Treffer“).")
+        treffer = treffer[:grenze]
+    return {"treffer": treffer, "hinweise": hinweise, "branche": branche}
+
+
+def max_treffer(conn: sqlite3.Connection) -> int:
+    """„Maximale Treffer je Suche“: 0 heißt ohne Grenze."""
+    try:
+        wert = int(db.einstellung(conn, "suche.max_treffer", str(MAX_TREFFER)) or MAX_TREFFER)
+    except ValueError:
+        wert = MAX_TREFFER
+    return wert if wert > 0 else 10 ** 9
 
 
 def gemerktes_gebiet(conn: sqlite3.Connection, ort: str, land: str, client=None) -> "quellen.Gebiet":
@@ -609,7 +636,7 @@ KI_SIGNALE = {
     "n8n/LangChain": r"\bn8n\b|langchain|langgraph|llamaindex|crewai|autogen", "MCP": r"\bmcp\b|model context protocol",
 }
 _KI = {name: re.compile(muster, re.I) for name, muster in KI_SIGNALE.items()}
-KI_CHECK_SEKUNDEN = 120
+KI_CHECK_SEKUNDEN = 240  # mehr Treffer, mehr Anzeigen zu lesen; gelesene merkt der Cache
 
 
 def ki_signale(text: str) -> list[str]:
@@ -631,7 +658,7 @@ def mit_ki_signalen(conn: sqlite3.Connection, treffer: list[dict], melde=lambda 
 
     def lies(t):
         return " ".join(str(t.get(f, "")) for f in ("titel", "beruf", "beschreibung", "schnipsel")) + " " + anzeigentext(t, netz)
-    pool = ThreadPoolExecutor(4)
+    pool = ThreadPoolExecutor(6)
     auftraege = {pool.submit(lies, t): t for t in offen}
     fertig_zahl = 0
     try:

@@ -2,6 +2,17 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.14.0 – 2026-11-23
+
+### Neu
+- Suche: Die Trefferliste hat Seiten (25/50/100 pro Seite, „‹ 1 2 3 ›“, „Treffer 51–100 von 237“). Sortieren per Klick auf den Spaltenkopf gilt für alle Treffer, nicht nur für die sichtbare Seite; km sortieren als Zahl.
+- Suche: Feld „max. … Treffer“ (Standard 200, 0 = ohne Grenze). Bei mehr Treffern bleiben die besten nach Nähe, der Hinweis sagt, wie viele es insgesamt waren.
+- System → Sicherung: Stand der nächtlichen PostgreSQL-Sicherung (letzter Lauf, Größe je Datenbank, Zahl der Stände, Warnung ab 36 Stunden) und „Jetzt sichern“ über den systemd-User-Dienst `pg-sicherung.service`. Ohne den Dienst bleibt der Knopf aus. Bei SQLite: „Datei sichern“ kopiert die Datenbank konsistent nach `~/Backups/jobsuche/`, die letzten 14 bleiben.
+
+### Geändert
+- Jobbörse: zwei Seiten à 100 Anzeigen je Suchwort statt einer à 50 (gemessen rund dreimal so viele Stellen). Ist die Liste eines Suchworts zu Ende, folgt keine leere Abfrage mehr.
+- KI-Check („nur KI erwünscht“): mehr Zeit (240 s) und 6 statt 4 parallele Abrufe, weil jetzt mehr Anzeigen zu lesen sind. Gelesene merkt sich die App wie bisher.
+
 ## 0.13.1 – 2026-11-23
 
 ### Behoben

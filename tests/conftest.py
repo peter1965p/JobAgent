@@ -113,6 +113,15 @@ def keine_echten_systemeingriffe(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(llm, "AUSWEICHEN", [])
 
 
+@pytest.fixture(autouse=True)
+def keine_echte_sicherung(monkeypatch, tmp_path_factory):
+    """Die Sicherungskarte liest nie Peters ~/Backups und fragt nie systemd."""
+    from jobsuche import sicherung
+    monkeypatch.setattr(sicherung, "PG_ORDNER", tmp_path_factory.mktemp("pg-sicherung"))
+    monkeypatch.setattr(sicherung, "SQLITE_ORDNER", tmp_path_factory.mktemp("sqlite-sicherung"))
+    monkeypatch.setattr(sicherung, "dienst_vorhanden", lambda: False)
+
+
 @pytest.fixture
 def conn():
     verbindung = db.verbinden(":memory:")

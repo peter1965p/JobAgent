@@ -25,7 +25,7 @@ try:  # Eingebauter Browser für die Wohnungs-Vorschau; fehlt er, bleibt die App
 except ImportError:  # pragma: no cover - hängt von der Qt-Installation ab
     QWebEngineView = None
 
-from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, suche, versand, wohnung
+from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, sicherung, suche, versand, wohnung
 from . import start, theme
 from .anmelden import AnmeldeFenster
 from .laufband import Laufband
@@ -1319,6 +1319,16 @@ class SucheSeite(Seite):
                                  "Eine alte Anzeige, die nur aufgefrischt wurde, bleibt alt. 0: jedes Alter. "
                                  "Quellen ohne Datum (Verzeichnis, Internet, Alerts, Portale) filtert das nicht.")
         reihe.addWidget(self.max_tage)
+        self.max_treffer = QSpinBox()
+        self.max_treffer.setRange(0, 2000)
+        self.max_treffer.setSingleStep(50)
+        self.max_treffer.setValue(suche.MAX_TREFFER)
+        self.max_treffer.setPrefix("max. ")
+        self.max_treffer.setSuffix(" Treffer")
+        self.max_treffer.setSpecialValueText("alle Treffer")
+        self.max_treffer.setToolTip("Maximale Treffer je Suche. Die besten nach Nähe bleiben, die Liste zeigt sie in Seiten. "
+                                    "0: ohne Grenze.")
+        reihe.addWidget(self.max_treffer)
         self.aufgefrischte = Schalter("Aufgefrischte behalten")
         self.aufgefrischte.setChecked(True)
         self.aufgefrischte.setToolTip("An: Eine alte Anzeige bleibt, wenn die Firma sie in dieser Zeit bearbeitet hat. "
@@ -1392,9 +1402,34 @@ class SucheSeite(Seite):
         self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI", "Alter"],
                            [50, 165, None, 95, 52, 80, 60, 110, 62])
         self.tab.horizontalHeaderItem(4).setToolTip("Fahrstrecke mit dem Auto. ≈ heißt Luftlinie, wenn keine Route bekannt ist.")
-        self.tab.setSortingEnabled(True)
+        # Sortiert wird über alle Seiten: Klick auf den Kopf sortiert die ganze Trefferliste, nicht nur die sichtbare Seite.
+        self.tab.setSortingEnabled(False)
+        kopf = self.tab.horizontalHeader()
+        kopf.setSectionsClickable(True)
+        kopf.setSortIndicatorShown(True)
+        kopf.sectionClicked.connect(self._sortiere)
+        self.sortierung: tuple[int, bool] | None = None  # (Spalte, absteigend)
+        self.seite_nr = 0
         self.tab.itemSelectionChanged.connect(self.zeige_details)
         ergebnis.lage.addWidget(self.tab, 1)
+        leiste = QHBoxLayout()
+        self.seiten_info = label("", "gedimmt")
+        leiste.addWidget(self.seiten_info)
+        leiste.addStretch(1)
+        self.pro_seite = QComboBox()
+        for n in (25, 50, 100):
+            self.pro_seite.addItem(f"{n} pro Seite", n)
+        self.pro_seite.setCurrentIndex(1)
+        self.pro_seite.currentIndexChanged.connect(lambda _: self._blaettere(0))
+        leiste.addWidget(self.pro_seite)
+        self.zurueck = knopf("‹", lambda: self._blaettere(self.seite_nr - 1))
+        leiste.addWidget(self.zurueck)
+        self.seiten_knoepfe = QHBoxLayout()
+        self.seiten_knoepfe.setSpacing(4)
+        leiste.addLayout(self.seiten_knoepfe)
+        self.weiter = knopf("›", lambda: self._blaettere(self.seite_nr + 1))
+        leiste.addWidget(self.weiter)
+        ergebnis.lage.addLayout(leiste)
         unten = QHBoxLayout()
         unten.setSpacing(18)
         unten.addWidget(ergebnis, 1)
@@ -1487,6 +1522,7 @@ class SucheSeite(Seite):
             self.stichwoerter.setText(lies("stichwoerter"))
             self.nur_ki.setChecked(lies("nur_ki") == "1")
             self.max_tage.setValue(int(lies("max_tage", str(suche.MAX_TAGE)) or 0))
+            self.max_treffer.setValue(int(lies("max_treffer", str(suche.MAX_TREFFER)) or 0))
             self.aufgefrischte.setChecked(lies("aufgefrischte", "1") == "1")
             self._waehle(self.remote, lies("remote"))
             self._internet_moeglich()
@@ -1496,17 +1532,80 @@ class SucheSeite(Seite):
         self.stichwoerter.setPlaceholderText(f"Stichwörter, leer: {abgeleitet}" if abgeleitet else "Stichwörter für Titel, leer: aus den Suchbegriffen")
         self._zeige()
 
+    def _zeile(self, t: dict) -> tuple:
+        return (t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"],
+                ("🏠 " if t.get("remote") else "") + t["ort"],
+                km_text(t), t.get("quelle", ""),
+                "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
+                ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", "")))
+
+    def _reihenfolge(self) -> list[int]:
+        """IDs aller Treffer in der gewählten Sortierung (ohne Wahl: wie die Suche sie geliefert hat)."""
+        ids = list(self.treffer)
+        if self.sortierung is None:
+            return ids
+        spalte, ab = self.sortierung
+
+        def schluessel(i):
+            wert = self._zeile(self.treffer[i])[spalte]
+            if spalte == 4:  # km: „≈ 12 km“ und „12 km“ als Zahl, ohne Angabe ans Ende
+                ziffern = "".join(ch for ch in str(wert) if ch.isdigit())
+                return (0, int(ziffern)) if ziffern else (1, 0)
+            if isinstance(wert, int):
+                return (0, wert)
+            if wert in ("", None):
+                return (1, 0)
+            return (0, str(wert).lower())
+        mit = [i for i in ids if schluessel(i)[0] == 0]
+        ohne = [i for i in ids if schluessel(i)[0] == 1]
+        try:
+            mit.sort(key=lambda i: schluessel(i)[1], reverse=ab)
+        except TypeError:  # gemischte Typen in einer Spalte: als Text
+            mit.sort(key=lambda i: str(schluessel(i)[1]), reverse=ab)
+        return mit + ohne  # Leere stehen immer hinten
+
+    def _sortiere(self, spalte: int):
+        ab = not self.sortierung[1] if self.sortierung and self.sortierung[0] == spalte else spalte in (0,)
+        self.sortierung = (spalte, ab)
+        self.tab.horizontalHeader().setSortIndicator(spalte, Qt.DescendingOrder if ab else Qt.AscendingOrder)
+        self._blaettere(0)
+
+    def _blaettere(self, nr: int):
+        self.seite_nr = nr
+        self._zeige()
+
+    def _seitenleiste(self, gesamt: int, n: int, seiten: int):
+        von = self.seite_nr * n + 1 if gesamt else 0
+        bis = min(gesamt, (self.seite_nr + 1) * n)
+        self.seiten_info.setText(f"Treffer {von}–{bis} von {gesamt}" if gesamt else "Keine Treffer")
+        self.zurueck.setEnabled(self.seite_nr > 0)
+        self.weiter.setEnabled(self.seite_nr < seiten - 1)
+        while self.seiten_knoepfe.count():
+            w = self.seiten_knoepfe.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        # Höchstens 7 Nummern: die erste, die letzte und die Nachbarn der aktuellen Seite
+        zeigen = sorted({0, seiten - 1, *range(max(0, self.seite_nr - 2), min(seiten, self.seite_nr + 3))}) if seiten > 1 else []
+        vorher = None
+        for i in zeigen:
+            if vorher is not None and i - vorher > 1:
+                self.seiten_knoepfe.addWidget(label("…", "gedimmt"))
+            b = knopf(str(i + 1), lambda _=False, i=i: self._blaettere(i), i == self.seite_nr)
+            b.setFixedWidth(42)
+            self.seiten_knoepfe.addWidget(b)
+            vorher = i
+
     def _zeige(self):
         bekannt = suche.bekannte_firmen(self.conn)
-        zeilen = []
         for t in self.treffer.values():
             t["bekannt"] = regeln.kurzname(t["firma"]).lower() in bekannt
-            zeilen.append((t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"],
-                           ("🏠 " if t.get("remote") else "") + t["ort"],
-                           km_text(t), t.get("quelle", ""),
-                           "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
-                           ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", ""))))
-        fuelle(self.tab, zeilen, list(self.treffer))
+        reihe = self._reihenfolge()
+        n = self.pro_seite.currentData() or 50
+        seiten = max(1, -(-len(reihe) // n))
+        self.seite_nr = min(max(0, self.seite_nr), seiten - 1)
+        sichtbar = reihe[self.seite_nr * n:(self.seite_nr + 1) * n]
+        fuelle(self.tab, [self._zeile(self.treffer[i]) for i in sichtbar], sichtbar)
+        self._seitenleiste(len(reihe), n, seiten)
         # Ampel: Wie lange ist die Anzeige schon draußen? Die Zahl bleibt sortierbar, der Punkt davor zeigt die Farbe.
         for r in range(self.tab.rowCount()):
             item = self.tab.item(r, SPALTE_ALTER)
@@ -1555,7 +1654,7 @@ class SucheSeite(Seite):
                            ("quellen", ",".join(gewaehlt)), ("searxng", auftrag.searxng), ("arbeitszeit", auftrag.arbeitszeit),
                            ("bundesland", self.gebiet.currentData() or ""), ("nur_ki", "1" if auftrag.nur_ki else "0"),
                            ("max_tage", str(auftrag.max_tage)), ("aufgefrischte", "1" if auftrag.aufgefrischte else "0"),
-                           ("remote", auftrag.remote)):
+                           ("remote", auftrag.remote), ("max_treffer", str(self.max_treffer.value()))):
             db.setze_einstellung(self.conn, f"suche.{name}", wert)
         return auftrag
 
@@ -1586,6 +1685,8 @@ class SucheSeite(Seite):
     def gefunden(self, ergebnis):
         self.treffer = dict(enumerate(ergebnis["treffer"]))
         self.ausfaelle.setText("\n".join(ergebnis.get("hinweise", [])))
+        self.seite_nr, self.sortierung = 0, None
+        self.tab.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self._zeige()
         if not ergebnis["treffer"]:
             self.f.melde("Keine Treffer. Versuche andere Begriffe, eine andere Branche oder ein größeres Gebiet.")
@@ -2435,8 +2536,20 @@ class SystemSeite(Seite):
         self.pg_status = label("", "gedimmt", True)
         ablage.lage.addWidget(self.pg_status)
         raster.addWidget(ablage, 0, 1)
-        raster.setRowStretch(1, 1)
+        sicher = Karte("Sicherung")
+        self.sicherung_info = label("", "gedimmt", True)
+        sicher.lage.addWidget(self.sicherung_info)
+        self.sicherung_ergebnis = label("", "gedimmt", True)
+        sicher.lage.addWidget(self.sicherung_ergebnis)
+        zeile = QHBoxLayout()
+        zeile.addStretch(1)
+        self.sichern_knopf = knopf("Jetzt sichern", self.jetzt_sichern, True)
+        zeile.addWidget(self.sichern_knopf)
+        sicher.lage.addLayout(zeile)
+        raster.addWidget(sicher, 1, 0, 1, 2)
+        raster.setRowStretch(2, 1)
         self._lade_speicher()
+        self._lade_sicherung()
 
     # --- Speicherort ---------------------------------------------------------------------------------------------
     def _lade_speicher(self):
@@ -2522,7 +2635,46 @@ class SystemSeite(Seite):
 
         self.f.starte("Daten auf den Server übernehmen", lambda _conn, melde: pg.uebernimm_alle(True, melde), fertig)
 
+    # --- Sicherung ----------------------------------------------------------------------------------------------
+    def _lade_sicherung(self):
+        if db.server():
+            stand = sicherung.stand_pg(sicherung.pg_ordner(self.conn))
+            self.sicherung_info.setText("PostgreSQL wird nachts außerhalb der App gesichert. " + sicherung.stand_text(stand))
+            self.sicherung_info.setObjectName("sperre" if stand["warnung"] else "gedimmt")
+            da = sicherung.dienst_vorhanden()
+            self.sichern_knopf.setText("Jetzt sichern")
+            self.sichern_knopf.setEnabled(da)
+            self.sichern_knopf.setToolTip("" if da else f"Der Dienst {sicherung.DIENST} ist auf diesem Rechner nicht eingerichtet.")
+            if not da:
+                self.sicherung_ergebnis.setText(f"„Jetzt sichern“ braucht den systemd-Dienst {sicherung.DIENST}.")
+        else:
+            self.sicherung_info.setText(f"Lokale Datei. „Datei sichern“ legt eine Kopie in {sicherung.sqlite_ordner(self.conn)} ab, "
+                                        f"die letzten {sicherung.SQLITE_BEHALTEN} bleiben.")
+            self.sicherung_info.setObjectName("gedimmt")
+            self.sichern_knopf.setText("Datei sichern")
+            self.sichern_knopf.setEnabled(True)
+            self.sichern_knopf.setToolTip("")
+        self.sicherung_info.style().unpolish(self.sicherung_info)
+        self.sicherung_info.style().polish(self.sicherung_info)
+
+    def jetzt_sichern(self):
+        self.sichern_knopf.setEnabled(False)
+        self.sicherung_ergebnis.setText("Sicherung läuft …")
+        if db.server():
+            def fertig(ergebnis):
+                ok, zeilen = ergebnis
+                self.sicherung_ergebnis.setText(("Gesichert. " if ok else "Sicherung fehlgeschlagen. ") + " · ".join(zeilen))
+                self._lade_sicherung()
+            return self.f.starte("Datenbank sichern", lambda _conn, melde: sicherung.jetzt_sichern_pg(melde), fertig)
+        ziel = sicherung.sqlite_ordner(self.conn)
+
+        def fertig_datei(datei):
+            self.sicherung_ergebnis.setText(f"Gesichert: {datei}")
+            self._lade_sicherung()
+        self.f.starte("Datei sichern", lambda conn, _melde: sicherung.sichere_sqlite(conn, ziel), fertig_datei)
+
     def aktualisieren(self):
+        self._lade_sicherung()
         aktuell = self.f.modell()
         self.auswahl.clear()
         try:
