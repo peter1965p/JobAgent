@@ -881,8 +881,44 @@ def _schreibe_kern(conn: sqlite3.Connection, firma_id: int, modell: str, chat, s
     antwort = chat(llm.schreibmodell(modell), system, nutzer, ENTWURF_SCHEMA, 0.7 if stil else 0.4)
     if not _nur_kern(str(antwort.get("text", ""))):
         raise llm.LLMFehler("Das Modell hat keinen Mailtext geliefert. Versuche es noch einmal.")
+    text = fuelle_platzhalter(str(antwort.get("text", "")), firma, stelle)
+    reste = platzhalter_in(text)
+    if reste:
+        # Einmal nachbessern lassen, mit genau den Lücken. Bleibt etwas übrig, sperrt die Prüfung wie bisher die Freigabe.
+        nutzer2 = (nutzer + "\n\n<korrektur>\nDein Entwurf enthält Platzhalter: " + ", ".join(f"„{r}“" for r in reste)
+                   + f". Die Firma heißt „{_daten(firma['name'])}“"
+                   + (f", die Stelle „{_daten(stelle['titel'])}“" if stelle and stelle.get("titel") else "")
+                   + ". Schreib den Text vollständig neu, ohne eckige Klammern, ohne Auslassungspunkte und ohne Herr/Frau. "
+                   "Was du aus den Quellen nicht weißt, lässt du weg, statt eine Lücke zu lassen.\n</korrektur>\n\n"
+                   f"<entwurf>\n{_daten(text)}\n</entwurf>")
+        zweite = chat(llm.schreibmodell(modell), system, nutzer2, ENTWURF_SCHEMA, 0.3)
+        neu = fuelle_platzhalter(str(zweite.get("text", "")), firma, stelle)
+        if _nur_kern(neu) and len(platzhalter_in(neu)) < len(reste):
+            text, antwort = neu, zweite
     betreff = betreff_fuer_stelle(stelle) if stelle else str(antwort.get("betreff", ""))
-    return str(antwort.get("text", "")), betreff, [f["fakt_id"] for f in fakten]
+    return text, betreff, [f["fakt_id"] for f in fakten]
+
+
+_TITEL_LUECKE = re.compile(r"\[(?:genauer\s+)?(?:Titel der Stelle|Stellentitel|Stellenbezeichnung|Bezeichnung der Stelle|"
+                           r"Name der Stelle|Jobtitel|Position|Stelle)\]", re.I)
+_FIRMEN_LUECKE = re.compile(r"\[(?:Name der Firma|Firmenname|Firma|Unternehmen|Name des Unternehmens|Unternehmensname|"
+                            r"Arbeitgeber)\]", re.I)
+
+
+def fuelle_platzhalter(text: str, firma, stelle: dict | None) -> str:
+    """Lücken, die die Daten sicher füllen: Stellentitel und Firmenname. Alles andere bleibt für die Nachbesserung."""
+    if stelle and stelle.get("titel"):
+        text = _TITEL_LUECKE.sub(lambda _: stelle["titel"], text)
+    return _FIRMEN_LUECKE.sub(lambda _: firma["name"], text)
+
+
+def platzhalter_in(text: str) -> list[str]:
+    """Die Platzhalter, die die Prüfung sperren würden, je einmal."""
+    gesehen = []
+    for m in regeln.PLATZHALTER.finditer(text):
+        if m.group(0).strip() and m.group(0) not in gesehen:
+            gesehen.append(m.group(0))
+    return gesehen
 
 
 def _speichere_entwurf(conn, firma, kern: str, roher_betreff: str, absender: str, modell: str, fakt_ids: list) -> int:

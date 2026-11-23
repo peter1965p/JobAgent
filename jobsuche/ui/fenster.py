@@ -2738,6 +2738,16 @@ class WohnungSeite(Seite):
         reihe.addWidget(knopf("Postfächer …", self.postfaecher))
         reihe.addWidget(knopf("Postfächer lesen", self.lesen, True))
         filter_karte.lage.addLayout(reihe)
+        reihe = QHBoxLayout()
+        self.auto_orte = Schalter("Arbeitsorte aus Bewerbungen übernehmen")
+        self.auto_orte.setToolTip("Firmen, bei denen du dich beworben hast oder die du mit mindestens "
+                                  f"{wohnung.INTERESSANT_AB} bewertet hast, zählen mit ihrem Sitz als Arbeitsort. "
+                                  f"Nach Absage oder ohne Antwort bleiben sie noch {wohnung.SCHONFRIST_TAGE} Tage drin.")
+        self.auto_orte.toggled.connect(self.auto_orte_geaendert)
+        reihe.addWidget(self.auto_orte)
+        self.orte_liste = label("", "gedimmt", True)
+        reihe.addWidget(self.orte_liste, 1)
+        filter_karte.lage.addLayout(reihe)
         lage.addWidget(filter_karte)
 
         ergebnis = Karte("Angebote")
@@ -2805,9 +2815,32 @@ class WohnungSeite(Seite):
         self.ohne_tausch.setChecked(fl.ohne_tausch)
         self.verworfene.setChecked(fl.verworfene)
         self.arbeit.setText("; ".join(wohnung.arbeitsorte(self.conn)))
+        self.auto_orte.setChecked(wohnung.arbeitsorte_automatisch(self.conn))
         self._lade = False
         self._zeige_laender()
+        self._zeige_orte()
+        if wohnung.arbeitsorte_geaendert(self.conn):  # neue Bewerbung oder abgelaufene Frist: Wege neu rechnen
+            self._rechne_wege()
         self.fuellen()
+
+    def _zeige_orte(self):
+        auto = wohnung.arbeitsorte_aus_bewerbungen(self.conn) if self.auto_orte.isChecked() else []
+        hand = {o.lower() for o in wohnung.arbeitsorte(self.conn)}
+        auto = [(o, h) for o, h in auto if o.lower() not in hand]
+        self.orte_liste.setText("Aus Bewerbungen: " + "; ".join(f"{o} – {h}" for o, h in auto) if auto else
+                                "Aus Bewerbungen: noch keine." if self.auto_orte.isChecked() else "")
+
+    def _rechne_wege(self):
+        self.f.starte("Arbeitsweg berechnen", lambda conn, fort: wohnung.entfernungen(conn, melde=fort), nach=lambda _: self.fuellen())
+
+    def auto_orte_geaendert(self, an):
+        if self._lade:
+            return
+        wohnung.setze_arbeitsorte_automatisch(self.conn, an)
+        self._zeige_orte()
+        if wohnung.arbeitsorte_geaendert(self.conn):
+            self._rechne_wege()
+            self.fuellen()
 
     def _filter(self):
         return wohnung.Filter(
@@ -2834,7 +2867,8 @@ class WohnungSeite(Seite):
         if orte == wohnung.arbeitsorte(self.conn):
             return
         wohnung.setze_arbeitsorte(self.conn, orte)
-        self.f.starte("Arbeitsweg berechnen", lambda conn, fort: wohnung.entfernungen(conn, melde=fort), nach=lambda _: self.fuellen())
+        self._zeige_orte()
+        self._rechne_wege()
 
     # --- Liste ---
     def fuellen(self):

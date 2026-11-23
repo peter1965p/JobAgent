@@ -240,3 +240,76 @@ def test_vorauswahl_der_bundeslaender(conn):
     assert wohnung.Filter().laender == ("Nordrhein-Westfalen", "Niedersachsen")
     assert wohnung.lade_filter(conn).laender == ("Nordrhein-Westfalen", "Niedersachsen")
     assert set(wohnung.STANDARD_LAENDER) <= set(wohnung.BUNDESLAENDER)
+
+
+def _bewerbung(conn, name, sitz, status, gesendet="2026-11-01T10:00:00", score=None):
+    from jobsuche import firmen
+    fid = firmen.lege_an(conn, name, email=f"info@{name.split()[0].lower()}.example", sitz=sitz)
+    if status:
+        conn.execute("INSERT INTO entwuerfe (firma_id, empfaenger, betreff, text, ki_text, modell, status, erstellt, gesendet_am) "
+                     "VALUES (?, 'a@b.example', 'b', 't', 't', 'm', ?, ?, ?)", (fid, status, gesendet, gesendet))
+    if score is not None:
+        conn.execute("UPDATE firmen SET mein_score = ? WHERE id = ?", (score, fid))
+    conn.commit()
+    return fid
+
+
+def test_ort_aus_sitz():
+    assert wohnung.ort_aus_sitz("Musterweg 1, 12345 Musterstadt") == "12345 Musterstadt"
+    assert wohnung.ort_aus_sitz("Beispielstadt") == "Beispielstadt"
+    assert wohnung.ort_aus_sitz("verschiedene Arbeitsorte") == "" and wohnung.ort_aus_sitz("  ") == ""
+
+
+def test_arbeitsorte_aus_bewerbungen_mit_schonfrist(conn):
+    from datetime import date
+    _bewerbung(conn, "Aktiv GmbH", "Allee 2, 11111 Aktivstadt", "gesendet")
+    _bewerbung(conn, "Antwort AG", "22222 Antwortstadt", "antwort")
+    fid = _bewerbung(conn, "Absage GmbH", "33333 Absagestadt", "absage")
+    db.protokolliere(conn, "Status geändert", "absage", fid)
+    conn.execute("UPDATE ereignisse SET zeit = '2026-11-20T09:00:00' WHERE firma_id = ?", (fid,))
+    _bewerbung(conn, "Entwurf KG", "44444 Entwurfstadt", "entwurf")      # nur ein Entwurf: zählt nicht
+    _bewerbung(conn, "Gemocht GmbH", "55555 Mochstadt", None, score=80)  # selbst hoch bewertet
+    _bewerbung(conn, "Egal GmbH", "66666 Egalstadt", None, score=40)
+    _bewerbung(conn, "Ohne Sitz GmbH", "", "gesendet")
+    conn.commit()
+    orte = dict(wohnung.arbeitsorte_aus_bewerbungen(conn, heute=date(2026, 12, 1)))
+    assert orte == {"11111 Aktivstadt": "Aktiv GmbH (Bewerbung)", "22222 Antwortstadt": "Antwort AG (Bewerbung)",
+                    "33333 Absagestadt": "Absage GmbH (Bewerbung, abgeschlossen)", "55555 Mochstadt": "Gemocht GmbH (interessant)"}
+    # 30 Tage nach der Absage fällt die Firma raus, offene Bewerbungen bleiben.
+    spaeter = dict(wohnung.arbeitsorte_aus_bewerbungen(conn, heute=date(2026, 12, 25)))
+    assert "33333 Absagestadt" not in spaeter and "11111 Aktivstadt" in spaeter
+
+
+def test_arbeitsorte_von_hand_und_automatisch(conn):
+    wohnung.speichere(conn, [{"kennung": "x1", "portal": "Immowelt", "titel": "T", "ort": "O", "plz": "", "kalt": 500,
+                              "warm": None, "flaeche": 60, "zimmer": 2, "merkmale": "", "url": "u", "datum": "2026-11-22"}])
+    conn.execute("UPDATE wohnungen SET km = 12, km_ziel = 'alt'")
+    conn.commit()
+    wohnung.setze_arbeitsorte(conn, ["77777 Handstadt"])
+    assert not wohnung.arbeitsorte_geaendert(conn)  # gerade gesetzt: nichts zu tun
+    _bewerbung(conn, "Neu GmbH", "88888 Neustadt", "freigegeben")
+    conn.execute("UPDATE wohnungen SET km = 12")
+    conn.commit()
+    assert [o for o, _ in wohnung.alle_arbeitsorte(conn)] == ["77777 Handstadt", "88888 Neustadt"]
+    assert wohnung.arbeitsorte_geaendert(conn)  # neue Bewerbung: Wege neu rechnen
+    assert conn.execute("SELECT km FROM wohnungen").fetchone()[0] is None
+    assert not wohnung.arbeitsorte_geaendert(conn)
+    wohnung.setze_arbeitsorte_automatisch(conn, False)
+    assert wohnung.alle_arbeitsorte(conn) == [("77777 Handstadt", "von Hand")]
+    assert wohnung.arbeitsorte_geaendert(conn)
+
+
+def test_seite_zeigt_arbeitsorte_aus_bewerbungen(app_fenster, monkeypatch):
+    f = app_fenster
+    from jobsuche.ui import fenster
+    gestartet = []
+    monkeypatch.setattr(f, "starte", lambda titel, *a, **k: gestartet.append(titel))
+    _bewerbung(f.conn, "Muster GmbH", "Weg 1, 12345 Musterstadt", "gesendet")
+    f.zeige_seite(fenster.WohnungSeite)
+    seite = f.stapel.currentWidget()
+    seite.aktualisieren()
+    assert seite.auto_orte.isChecked()
+    assert "12345 Musterstadt – Muster GmbH (Bewerbung)" in seite.orte_liste.text()
+    assert gestartet == ["Arbeitsweg berechnen"]
+    seite.auto_orte.setChecked(False)
+    assert seite.orte_liste.text() == "" and not wohnung.arbeitsorte_automatisch(f.conn)

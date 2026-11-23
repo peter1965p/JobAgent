@@ -2,6 +2,14 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.13.0 – 2026-11-23
+
+### Neu
+- **Wohnungen: Arbeitsorte aus Bewerbungen.** Firmen, bei denen du dich beworben hast (freigegeben, gesendet, Antwort) oder die du selbst mit mindestens 70 bewertet hast, zählen mit ihrem Sitz automatisch als Arbeitsort für „bis … km zur Arbeit“. Nach Absage oder ohne Antwort bleiben sie noch 30 Tage drin. Von Hand eingetragene Orte bleiben zusätzlich. Die Seite zeigt die übernommenen Orte mit Herkunft; der Schalter „Arbeitsorte aus Bewerbungen übernehmen“ (Standard an) schaltet es ab. Ändern sich die Orte, rechnet die App die Fahrstrecken neu.
+
+### Geändert
+- **Entwürfe: Platzhalter werden nachgebessert.** Stellentitel und Firmenname in eckigen Klammern füllt die App direkt aus den Daten. Bleiben andere Lücken wie „[Beschreibung …]“, lässt sie das Modell einmal mit genau diesen Lücken nachbessern. Bleibt danach etwas stehen, sperrt die Prüfung wie bisher die Freigabe.
+
 ## 0.12.0 – 2026-11-23
 
 ### Neu

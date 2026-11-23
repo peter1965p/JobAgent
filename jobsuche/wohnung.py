@@ -279,14 +279,103 @@ def merke_filter(conn: sqlite3.Connection, f: Filter) -> None:
 
 
 def arbeitsorte(conn: sqlite3.Connection) -> list[str]:
+    """Die von Hand eingetragenen Arbeitsorte."""
     return [o.strip() for o in db.einstellung(conn, "wohnung.arbeitsorte", "").split(";") if o.strip()]
 
 
 def setze_arbeitsorte(conn: sqlite3.Connection, orte: list[str]) -> None:
     db.setze_einstellung(conn, "wohnung.arbeitsorte", "; ".join(o.strip() for o in orte if o.strip()))
+    _km_neu_rechnen(conn)
+
+
+# Arbeitsorte aus Bewerbungen: Wer sich bewirbt, will in der Nähe wohnen. Offene Bewerbungen zählen immer,
+# abgeschlossene (Absage, keine Antwort) noch eine Schonfrist lang, falls sich doch etwas tut.
+AKTIVE_BEWERBUNG = ("freigegeben", "gesendet", "antwort")
+ABGESCHLOSSEN = ("absage", "keine_antwort")
+SCHONFRIST_TAGE = 30
+INTERESSANT_AB = 70  # eigene Bewertung der Firma (0–100), ab der sie als Arbeitsort zählt
+_PLZ_ORT = re.compile(r"\b(\d{5})\s+([^\d,;()\n]+)")
+
+
+def ort_aus_sitz(sitz: str) -> str:
+    """„Musterweg 1, 12345 Musterstadt“ → „12345 Musterstadt“. Ohne Postleitzahl bleibt der Sitz, wie er ist."""
+    sitz = re.sub(r"\s+", " ", sitz or "").strip()
+    if not sitz or re.fullmatch(r"(?i)(verschiedene|mehrere|diverse|wechselnde)\s+(arbeits|einsatz)?orte?|deutschlandweit|bundesweit|remote", sitz):
+        return ""
+    m = _PLZ_ORT.search(sitz)
+    return f"{m.group(1)} {m.group(2).strip()}" if m else sitz
+
+
+def _abgeschlossen_am(conn: sqlite3.Connection, firma_id: int, status: str, ersatz: str) -> str:
+    zeile = conn.execute("SELECT max(zeit) AS zeit FROM ereignisse WHERE aktion = 'Status geändert' AND detail = ? "
+                         "AND firma_id = ?", (status, firma_id)).fetchone()
+    return (zeile["zeit"] if zeile and zeile["zeit"] else "") or ersatz or ""
+
+
+def arbeitsorte_aus_bewerbungen(conn: sqlite3.Connection, heute: date | None = None) -> list[tuple[str, str]]:
+    """(Ort, Herkunft) aus Bewerbungen und aus Firmen, die du selbst hoch bewertet hast. Ort ist der Firmensitz."""
+    heute = heute or date.today()
+    grenze = (heute - timedelta(days=SCHONFRIST_TAGE)).isoformat()
+    gruende: dict[int, str] = {}
+    for e in conn.execute("SELECT firma_id, status, gesendet_am, freigegeben_am, erstellt FROM entwuerfe "
+                          "WHERE status IN ('freigegeben', 'gesendet', 'antwort', 'absage', 'keine_antwort')").fetchall():
+        if e["status"] in AKTIVE_BEWERBUNG:
+            gruende[e["firma_id"]] = "Bewerbung"
+        elif e["firma_id"] not in gruende:
+            am = _abgeschlossen_am(conn, e["firma_id"], e["status"], e["gesendet_am"] or e["freigegeben_am"] or e["erstellt"])
+            if am[:10] >= grenze:
+                gruende[e["firma_id"]] = "Bewerbung, abgeschlossen"
+    for f in conn.execute("SELECT id FROM firmen WHERE mein_score >= ?", (INTERESSANT_AB,)).fetchall():
+        gruende.setdefault(f["id"], "interessant")
+    if not gruende:
+        return []
+    aus, gesehen = [], set()
+    for f in conn.execute("SELECT id, name, sitz FROM firmen ORDER BY name").fetchall():
+        if f["id"] not in gruende:
+            continue
+        ort = ort_aus_sitz(f["sitz"])
+        if not ort or ort.lower() in gesehen:
+            continue
+        gesehen.add(ort.lower())
+        aus.append((ort, f"{f['name']} ({gruende[f['id']]})"))
+    return aus
+
+
+def arbeitsorte_automatisch(conn: sqlite3.Connection) -> bool:
+    return db.einstellung(conn, "wohnung.arbeitsorte_auto", "1") == "1"
+
+
+def setze_arbeitsorte_automatisch(conn: sqlite3.Connection, an: bool) -> None:
+    db.setze_einstellung(conn, "wohnung.arbeitsorte_auto", "1" if an else "0")
+
+
+def alle_arbeitsorte(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Von Hand eingetragene Orte und, wenn eingeschaltet, die aus Bewerbungen. Doppelte zählen einmal."""
+    aus = [(o, "von Hand") for o in arbeitsorte(conn)]
+    if arbeitsorte_automatisch(conn):
+        bekannt = {o.lower() for o, _ in aus}
+        aus += [(o, h) for o, h in arbeitsorte_aus_bewerbungen(conn) if o.lower() not in bekannt]
+    return aus
+
+
+def _stand(orte: list[tuple[str, str]]) -> str:
+    return "; ".join(sorted(o.lower() for o, _ in orte))
+
+
+def _km_neu_rechnen(conn: sqlite3.Connection) -> None:
     tabelle_anlegen(conn)
-    conn.execute("UPDATE wohnungen SET km = NULL, km_ziel = ''")  # neu rechnen
+    db.setze_einstellung(conn, "wohnung.arbeitsorte_stand", _stand(alle_arbeitsorte(conn)))
+    conn.execute("UPDATE wohnungen SET km = NULL, km_ziel = ''")
     conn.commit()
+
+
+def arbeitsorte_geaendert(conn: sqlite3.Connection) -> bool:
+    """True, wenn sich die Arbeitsorte seit der letzten Rechnung geändert haben (neue Bewerbung, Frist abgelaufen).
+    Dann sind die Fahrstrecken zurückgesetzt und müssen neu gerechnet werden."""
+    if db.einstellung(conn, "wohnung.arbeitsorte_stand", "") == _stand(alle_arbeitsorte(conn)):
+        return False
+    _km_neu_rechnen(conn)
+    return True
 
 
 NEBENKOSTEN_JE_M2 = 2.8  # grobe Schätzung (Betriebskosten + Heizung) für Angebote ohne Warmmiete
@@ -390,7 +479,8 @@ def verorte(conn: sqlite3.Connection, client=None, melde=lambda _: None, hoechst
 def entfernungen(conn: sqlite3.Connection, client=None, melde=lambda _: None) -> int:
     """Fahrstrecke (Auto, km) von jeder verorteten Wohnung zum nächsten Arbeitsort."""
     from . import quellen
-    orte = arbeitsorte(conn)
+    arbeitsorte_geaendert(conn)
+    orte = [o for o, _ in alle_arbeitsorte(conn)]
     if not orte:
         return 0
     ziele = []

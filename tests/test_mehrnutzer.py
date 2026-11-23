@@ -65,6 +65,56 @@ def test_entwurf_traegt_namen_der_person_und_kommt_ohne_ansprechperson_aus(conn)
     assert "Ich-Form von Test Person" in llm.prompts[0]
 
 
+class FolgeLLM:
+    """Gibt nacheinander die Antworten zurück, die letzte bleibt."""
+    def __init__(self, *antworten):
+        self.antworten = list(antworten)
+        self.prompts = []
+
+    def __call__(self, modell, system, nutzer, schema, temperatur=0.3):
+        self.prompts.append(nutzer)
+        return self.antworten.pop(0) if len(self.antworten) > 1 else self.antworten[0]
+
+
+def test_platzhalter_firma_wird_direkt_gefuellt_ohne_zweiten_aufruf(conn):
+    _fakt(conn)
+    fid = firmen.lege_an(conn, "X GmbH", email="info@x.de")
+    llm = FolgeLLM({"betreff": "b", "text": "Bei [Firmenname] würde ich gern Server betreuen."})
+    eid = ki.erstelle_entwurf(conn, fid, "m", chat=llm)
+    text = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
+    assert "bei X GmbH würde ich" in text and len(llm.prompts) == 1
+
+
+def test_platzhalter_laesst_das_modell_einmal_nachbessern(conn):
+    _fakt(conn)
+    fid = firmen.lege_an(conn, "X GmbH", email="info@x.de")
+    llm = FolgeLLM({"betreff": "b", "text": "Mich reizt [Beschreibung der Reizfaktoren] bei Ihnen."},
+                   {"betreff": "b", "text": "Mich reizt der Betrieb Ihrer Server."})
+    eid = ki.erstelle_entwurf(conn, fid, "m", chat=llm)
+    text = conn.execute("SELECT text FROM entwuerfe WHERE id = ?", (eid,)).fetchone()[0]
+    assert "der Betrieb Ihrer Server" in text and "[" not in text and len(llm.prompts) == 2
+    assert "„[Beschreibung der Reizfaktoren]“" in llm.prompts[1] and "„X GmbH“" in llm.prompts[1]
+    assert not regeln.gesperrt(ki.pruefe_entwurf(conn, eid))
+
+
+def test_platzhalter_bleibt_nach_erfolgloser_nachbesserung_gesperrt(conn):
+    _fakt(conn)
+    fid = firmen.lege_an(conn, "X GmbH", email="info@x.de")
+    llm = FolgeLLM({"betreff": "b", "text": "Mich reizt [Grund] bei Ihnen."})  # liefert zweimal dasselbe
+    eid = ki.erstelle_entwurf(conn, fid, "m", chat=llm)
+    assert len(llm.prompts) == 2  # genau ein Nachbesserungsversuch
+    assert regeln.gesperrt(ki.pruefe_entwurf(conn, eid))
+
+
+def test_platzhalter_hilfen():
+    stelle = {"titel": "Systemadministrator (m/w/d)"}
+    firma = {"name": "Beispiel AG"}
+    assert ki.fuelle_platzhalter("Als [Titel der Stelle] bei [Unternehmen]", firma, stelle) == \
+        "Als Systemadministrator (m/w/d) bei Beispiel AG"
+    assert ki.fuelle_platzhalter("Als [Titel der Stelle]", firma, None) == "Als [Titel der Stelle]"
+    assert ki.platzhalter_in("A [x] B [x] Herr/Frau") == ["[x]", "Herr/Frau"]
+
+
 def test_ohne_vorlage_schreibt_das_modell_die_mail_und_15_minuten_erlaubt(conn):
     _fakt(conn)
     fid = firmen.lege_an(conn, "X GmbH", email="info@x.de")
