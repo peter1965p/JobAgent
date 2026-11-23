@@ -2,6 +2,17 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.12.0 – 2026-11-23
+
+### Neu
+- **PostgreSQL als Speicher (optional):** System → Daten → „Server (PostgreSQL)“ mit Server, Port, Datenbank, Benutzer; Passwort nur im Schlüsselbund, Verbindung nur verschlüsselt (TLS). SQLite bleibt der Standard. Jede Person bekommt auf dem Server ein eigenes Schema, wie sonst eine eigene Datei.
+- Vektorsuche über pgvector, Volltextsuche über tsvector mit deutschem Wörterbuch (statt sqlite-vec/FTS5); die hybride Suche bleibt gleich.
+- „Lokale Daten übernehmen“ (Knopf und `python -m jobsuche.pg uebernehmen`): kopiert alle lokalen Datenbanken unter `daten/` auf den Server und vergleicht die Zeilenzahlen. Die SQLite-Dateien bleiben unverändert als Sicherung. `python -m jobsuche.pg pruefen` testet die Verbindung.
+- Tests laufen zusätzlich gegen PostgreSQL, wenn `JOBSUCHE_TEST_PG` gesetzt ist; ohne Server werden diese Tests übersprungen.
+
+### Geändert
+- Wohnungen: Die Vorauswahl der Bundesländer im Filter ist jetzt Nordrhein-Westfalen und Niedersachsen (vorher zusätzlich Bremen, Hamburg und Schleswig-Holstein). Gespeicherte Filter bleiben, wie sie sind.
+
 ## 0.11.0 – 2026-11-22
 
 ### Geändert

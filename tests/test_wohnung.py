@@ -234,3 +234,9 @@ def app_fenster(tmp_path, monkeypatch):
     w.melde = w.meldungen.append
     yield w
     w.close()
+
+
+def test_vorauswahl_der_bundeslaender(conn):
+    assert wohnung.Filter().laender == ("Nordrhein-Westfalen", "Niedersachsen")
+    assert wohnung.lade_filter(conn).laender == ("Nordrhein-Westfalen", "Niedersachsen")
+    assert set(wohnung.STANDARD_LAENDER) <= set(wohnung.BUNDESLAENDER)

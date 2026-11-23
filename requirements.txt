@@ -4,6 +4,7 @@ numpy
 matplotlib
 PySide6
 sqlite-vec
+psycopg[binary]>=3.2
 fastembed
 pypdf
 python-docx

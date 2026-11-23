@@ -14,6 +14,19 @@ os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="tueroeffner-test-")
 
 from jobsuche import config, db, firmen, person, quellen, rag, suche  # noqa: E402
 
+# Zweiter Lauf gegen PostgreSQL: JOBSUCHE_TEST_PG="host=… dbname=jobsuche_test user=…" (Passwort aus dem
+# Schlüsselbund, Dienst „jobsuche“, oder JOBSUCHE_TEST_PG_PASSWORT). Ohne die Variable läuft alles auf SQLite.
+_PG = None
+if os.environ.get("JOBSUCHE_TEST_PG"):
+    _werte = dict(t.split("=", 1) for t in os.environ["JOBSUCHE_TEST_PG"].split())
+    _PG = {"art": "postgres", "host": _werte["host"], "port": int(_werte.get("port", 5432)),
+           "datenbank": _werte["dbname"], "benutzer": _werte["user"]}
+    if os.environ.get("JOBSUCHE_TEST_PG_PASSWORT"):
+        _PG["passwort"] = os.environ["JOBSUCHE_TEST_PG_PASSWORT"]
+    else:
+        import keyring
+        _PG["passwort"] = keyring.get_password("jobsuche", f"postgres:{_PG['benutzer']}@{_PG['host']}") or ""
+
 
 def _fake_embed(texte):
     """Deterministische Wort-Hash-Vektoren: schnell und ohne Modell-Download."""
@@ -25,6 +38,36 @@ def _fake_embed(texte):
         v[0] += 0.001
         ergebnis.append(sqlite_vec.serialize_float32(v))
     return ergebnis
+
+
+@pytest.fixture(scope="session", autouse=True)
+def saubere_testdatenbank():
+    """Vor und nach dem Postgres-Lauf: alle Test-Schemata weg."""
+    if not _PG:
+        yield
+        return
+    from jobsuche import pg
+
+    def aufraeumen():
+        with pg.roh_verbinden(_PG) as roh:
+            for (name,) in roh.execute("SELECT schema_name FROM information_schema.schemata "
+                                       "WHERE schema_name LIKE 'js\\_%'").fetchall():
+                roh.execute(f'DROP SCHEMA "{name}" CASCADE')
+    aufraeumen()
+    yield
+    aufraeumen()
+
+
+@pytest.fixture(autouse=True)
+def speicherort(monkeypatch):
+    """Nie Peters echte Einstellung (daten/datenbank.json): SQLite, oder im Postgres-Lauf die Test-Datenbank."""
+    monkeypatch.setattr(db, "_server", _PG)
+    monkeypatch.setattr(db, "MEMORY_AUF_SERVER", bool(_PG))
+    if _PG:
+        # In der App zählt der Pfad relativ zu daten/. Tests legen aber viele daten/-Ordner an: absolut trennen.
+        from jobsuche import pg
+        echt = pg.schema_fuer
+        monkeypatch.setattr(pg, "schema_fuer", lambda pfad, daten: echt(pfad, Path("/")))
 
 
 @pytest.fixture(autouse=True)

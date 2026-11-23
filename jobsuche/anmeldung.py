@@ -35,8 +35,8 @@ def _adresse(email: str) -> str:
 def datenbank_fuer(email: str) -> Path:
     """Eine ältere gemeinsame Datenbank bleibt bei ihrer Besitzerin, alle anderen bekommen einen eigenen Ordner."""
     alt = config.DATEN / "jobsuche.db"
-    if alt.exists():
-        conn = sqlite3.connect(alt)
+    if db.existiert(alt):
+        conn = db.verbinden(alt) if db.server() else sqlite3.connect(alt)
         try:
             zeile = conn.execute("SELECT email FROM person WHERE id = 1").fetchone()
         except sqlite3.Error:
@@ -49,7 +49,7 @@ def datenbank_fuer(email: str) -> Path:
 
 
 def _bekanntes_konto(pfad: Path) -> tuple[mailkonten.Konto | None, str]:
-    if not pfad.exists():
+    if not db.existiert(pfad):
         return None, ""
     conn = db.verbinden(pfad)
     try:
@@ -98,7 +98,7 @@ def pruefe(email: str, passwort: str, konto: mailkonten.Konto | None = None, hom
 
 def ist_neu(email: str) -> bool:
     """Wahr, wenn für diese Adresse noch kein Konto auf diesem Rechner existiert."""
-    return "@" in email and not datenbank_fuer(email).exists()
+    return "@" in email and not db.existiert(datenbank_fuer(email))
 
 
 def oeffne(ergebnis: Ergebnis, email: str, passwort: str, name: str = "") -> None:

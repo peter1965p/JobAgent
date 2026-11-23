@@ -215,11 +215,10 @@ CREATE TABLE IF NOT EXISTS wohnungen (
 """
 
 TAGE = 30  # Wohnungen sind schneller weg als Stellen; älter lohnt nicht
-# NRW bis in den Norden: die Vorauswahl für den Umzug
 BUNDESLAENDER = ("Nordrhein-Westfalen", "Niedersachsen", "Bremen", "Hamburg", "Schleswig-Holstein", "Mecklenburg-Vorpommern",
                  "Sachsen-Anhalt", "Brandenburg", "Berlin", "Hessen", "Thüringen", "Sachsen", "Rheinland-Pfalz", "Saarland",
                  "Baden-Württemberg", "Bayern")
-STANDARD_LAENDER = BUNDESLAENDER[:5]
+STANDARD_LAENDER = ("Nordrhein-Westfalen", "Niedersachsen")  # Vorauswahl im Filter; jede Person stellt ihre Länder selbst ein
 
 
 def tabelle_anlegen(conn: sqlite3.Connection) -> None:

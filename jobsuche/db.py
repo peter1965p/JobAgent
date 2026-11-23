@@ -1,3 +1,5 @@
+import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -151,8 +153,79 @@ def jetzt() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def verbinden(pfad: Path | str | None = None) -> sqlite3.Connection:
+# --- Speicherort: lokal (SQLite, Standard) oder Server (PostgreSQL) ---------------------------------------------------
+# Die Wahl gilt für den Rechner, nicht für eine Person: Sie steht vor der Anmeldung fest und liegt deshalb in einer
+# Datei neben den Daten. Das Passwort steht nie darin, nur im Schlüsselbund (Dienst „jobsuche“).
+
+_UNGELADEN = object()
+_server: dict | None | object = _UNGELADEN
+MEMORY_AUF_SERVER = False  # Nur für Tests: auch ":memory:" landet dann in einem frischen Schema auf dem Server.
+
+
+def server_datei() -> Path:
+    return config.DATEN / "datenbank.json"
+
+
+def server() -> dict | None:
+    """Die PostgreSQL-Einstellung oder None für SQLite."""
+    global _server
+    if _server is _UNGELADEN:
+        try:
+            daten = json.loads(server_datei().read_text())
+        except (OSError, ValueError):
+            daten = {}
+        _server = daten if daten.get("art") == "postgres" else None
+    return _server  # type: ignore[return-value]
+
+
+def speichere_server(einstellung: dict | None) -> None:
+    """None schaltet zurück auf SQLite. Gilt ab dem nächsten Verbinden; offene Verbindungen bleiben, wo sie sind."""
+    global _server
+    datei = server_datei()
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    if einstellung is None:
+        datei.write_text(json.dumps({"art": "sqlite"}, indent=2))
+        _server = None
+        return
+    sauber = {k: einstellung[k] for k in ("host", "port", "datenbank", "benutzer", "sslmode") if k in einstellung}
+    datei.write_text(json.dumps({"art": "postgres", **sauber}, indent=2))
+    os.chmod(datei, 0o600)
+    _server = {"art": "postgres", **sauber}
+
+
+def ist_postgres(conn) -> bool:
+    from . import pg
+    return isinstance(conn, pg.Verbindung)
+
+
+def _ist_demo(pfad) -> bool:
+    """Die Demo bleibt immer eine Wegwerf-Datei, auch wenn ein Server eingestellt ist."""
+    from . import demo
+    return bool(demo.ORDNER) and str(pfad) != ":memory:" and Path(demo.ORDNER) in Path(pfad).parents
+
+
+def _auf_server(pfad) -> bool:
+    if str(pfad) == ":memory:":
+        return bool(server()) and MEMORY_AUF_SERVER
+    return bool(server()) and not _ist_demo(pfad)
+
+
+def existiert(pfad: Path | str) -> bool:
+    """Gibt es für diesen Pfad schon einen Speicher? Unter SQLite die Datei, auf dem Server das Schema."""
+    if str(pfad) != ":memory:" and _auf_server(pfad):
+        from . import pg
+        return pg.schema_existiert(server(), pg.schema_fuer(pfad, config.DATEN))
+    return Path(pfad).exists()
+
+
+def verbinden(pfad: Path | str | None = None):
     pfad = pfad or config.DB_PFAD
+    if _auf_server(pfad):
+        from . import pg
+        schema = None if str(pfad) == ":memory:" else pg.schema_fuer(pfad, config.DATEN)
+        if schema:
+            Path(pfad).parent.mkdir(parents=True, exist_ok=True)  # Lebenslauf, Agenda usw. liegen weiter daneben
+        return pg.verbinden(server(), schema, SCHEMA, _ergaenze_spalten)
     if str(pfad) != ":memory:":
         Path(pfad).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(pfad), timeout=30)

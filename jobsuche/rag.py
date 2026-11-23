@@ -1,4 +1,4 @@
-"""Hybride Suche: Vektor (sqlite-vec) und Stichwort (FTS5), per Reciprocal Rank Fusion vereint.
+"""Hybride Suche: Vektor (sqlite-vec bzw. pgvector) und Stichwort (FTS5 bzw. tsvector), per Reciprocal Rank Fusion vereint.
 
 Die Filter stehen vor dem Ranking im SQL. Was ein Aufrufer nicht sehen darf, kann so
 nicht in die Treffer rutschen. Mailentwürfe nutzen nur `fakten` und `firmentext`.
@@ -80,7 +80,14 @@ def _suche(conn: sqlite3.Connection, frage: str, von_wo: str, parameter: tuple, 
         )]
     wort_ids: list[int] = []
     anfrage = _fts_anfrage(frage)
-    if anfrage and modus in ("hybrid", "wort"):
+    if anfrage and modus in ("hybrid", "wort") and db.ist_postgres(conn):
+        # PostgreSQL: Spalte tsv (deutsches Wörterbuch); websearch versteht dieselbe Anfrage „"a" OR "b"“
+        wort_ids = [z["id"] for z in conn.execute(
+            f"SELECT c.id {von_wo} AND c.tsv @@ websearch_to_tsquery('german', ?) "
+            "ORDER BY ts_rank(c.tsv, websearch_to_tsquery('german', ?)) DESC, c.id LIMIT ?",
+            (*parameter, anfrage, anfrage, k * 3),
+        )]
+    elif anfrage and modus in ("hybrid", "wort"):
         wort_ids = [z["id"] for z in conn.execute(
             f"SELECT c.id {von_wo} AND c.id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?) "
             "ORDER BY (SELECT rank FROM chunks_fts WHERE chunks_fts MATCH ? AND rowid = c.id) LIMIT ?",

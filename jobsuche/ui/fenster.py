@@ -77,6 +77,18 @@ def label(text="", name=None, umbruch=False):
     return w
 
 
+def keyring_passwort(server: dict) -> bool:
+    """Gibt es für diesen Server schon ein Passwort im Schlüsselbund? (Der Wert selbst bleibt dort.)"""
+    if not server.get("host") or not server.get("benutzer"):
+        return False
+    try:
+        import keyring
+        from .. import pg
+        return bool(keyring.get_password("jobsuche", pg.schluessel(server)))
+    except Exception:
+        return False
+
+
 def knopf(text, aktion, primaer=False):
     b = QPushButton(text)
     if primaer:
@@ -2392,10 +2404,123 @@ class SystemSeite(Seite):
         modell.lage.addWidget(self.auswahl)
         raster.addWidget(modell, 0, 0)
         ablage = Karte("Daten")
-        ablage.lage.addWidget(label(f"Datenbank: {config.DB_PFAD}\nEmbeddings: {config.EMBEDDING_MODELL}\n"
-                                    f"Analyse: jupyter lab analyse.ipynb", "gedimmt", True))
+        self.ablage_info = label("", "gedimmt", True)
+        ablage.lage.addWidget(self.ablage_info)
+        self.speicher_art = QComboBox()
+        self.speicher_art.addItems(["Lokal (SQLite-Datei)", "Server (PostgreSQL)"])
+        self.speicher_art.currentIndexChanged.connect(self._speicher_felder)
+        ablage.lage.addWidget(self.speicher_art)
+        self.server_form = QWidget()
+        form = QFormLayout(self.server_form)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.pg_felder = {}
+        for schluessel, titel, vorgabe in (("host", "Server", ""), ("port", "Port", "5432"),
+                                           ("datenbank", "Datenbank", "jobsuche"), ("benutzer", "Benutzer", "jobsuche")):
+            feld = QLineEdit(vorgabe)
+            self.pg_felder[schluessel] = feld
+            form.addRow(titel, feld)
+        self.pg_felder["port"].setValidator(QIntValidator(1, 65535))
+        self.pg_passwort = QLineEdit()
+        self.pg_passwort.setEchoMode(QLineEdit.Password)
+        form.addRow("Passwort", self.pg_passwort)
+        ablage.lage.addWidget(self.server_form)
+        zeile = QHBoxLayout()
+        self.pg_testen = knopf("Verbindung testen", self.teste_server)
+        zeile.addWidget(self.pg_testen)
+        self.pg_uebernehmen = knopf("Lokale Daten übernehmen", self.uebernimm_lokal)
+        zeile.addWidget(self.pg_uebernehmen)
+        zeile.addStretch(1)
+        zeile.addWidget(knopf("Speichern", self.speichere_speicher, True))
+        ablage.lage.addLayout(zeile)
+        self.pg_status = label("", "gedimmt", True)
+        ablage.lage.addWidget(self.pg_status)
         raster.addWidget(ablage, 0, 1)
         raster.setRowStretch(1, 1)
+        self._lade_speicher()
+
+    # --- Speicherort ---------------------------------------------------------------------------------------------
+    def _lade_speicher(self):
+        s = db.server() or {}
+        self.speicher_art.setCurrentIndex(1 if s else 0)
+        for schluessel, feld in self.pg_felder.items():
+            if s.get(schluessel):
+                feld.setText(str(s[schluessel]))
+        if s:
+            ort = f"PostgreSQL {s.get('benutzer')}@{s.get('host')}/{s.get('datenbank')} (Schema der angemeldeten Person)"
+        else:
+            ort = str(config.DB_PFAD)
+        self.ablage_info.setText(f"Datenbank: {ort}\nEmbeddings: {config.EMBEDDING_MODELL}\n"
+                                 f"Analyse: jupyter lab analyse.ipynb")
+        self._speicher_felder()
+
+    def _speicher_felder(self):
+        server = self.speicher_art.currentIndex() == 1
+        self.server_form.setVisible(server)
+        self.pg_testen.setVisible(server)
+        self.pg_uebernehmen.setVisible(server)
+        if server:
+            vorhanden = keyring_passwort(self._server_eingabe())
+            self.pg_passwort.setPlaceholderText("im Schlüsselbund gespeichert" if vorhanden else "")
+
+    def _server_eingabe(self) -> dict:
+        werte = {k: f.text().strip() for k, f in self.pg_felder.items()}
+        werte["port"] = int(werte["port"] or 5432)
+        werte["sslmode"] = "require"
+        return werte
+
+    def _merke_passwort(self, werte: dict) -> None:
+        if self.pg_passwort.text():
+            from .. import pg
+            import keyring
+            keyring.set_password("jobsuche", pg.schluessel(werte), self.pg_passwort.text())
+            self.pg_passwort.clear()
+
+    def teste_server(self):
+        from .. import pg
+        werte = self._server_eingabe()
+        if not werte["host"]:
+            return self.pg_status.setText("Trag den Server ein.")
+        if self.pg_passwort.text():
+            werte["passwort"] = self.pg_passwort.text()
+        self.pg_status.setText(pg.pruefe(werte))
+
+    def speichere_speicher(self):
+        if self.speicher_art.currentIndex() == 0:
+            db.speichere_server(None)
+            self.pg_status.setText("Gespeichert: lokal (SQLite). Gilt nach einem Neustart der App.")
+            return self._lade_speicher()
+        werte = self._server_eingabe()
+        if not werte["host"] or not werte["datenbank"] or not werte["benutzer"]:
+            return self.pg_status.setText("Server, Datenbank und Benutzer ausfüllen.")
+        self._merke_passwort(werte)
+        db.speichere_server(werte)
+        self.pg_status.setText("Gespeichert: PostgreSQL. Gilt nach einem Neustart der App. "
+                               "Vorher „Lokale Daten übernehmen“, sonst startest du dort leer.")
+        self._lade_speicher()
+
+    def uebernimm_lokal(self):
+        from .. import pg
+        werte = self._server_eingabe()
+        self._merke_passwort(werte)
+        if db.server() != {"art": "postgres", **werte}:
+            db.speichere_server(werte)
+        antwort = QMessageBox.question(
+            self, "Daten übernehmen",
+            "Alle lokalen Datenbanken unter „daten/“ auf den Server kopieren? Die Dateien bleiben als Sicherung "
+            "unverändert. Liegen dort schon Daten, werden sie ersetzt.")
+        if antwort != QMessageBox.Yes:
+            return
+
+        def fertig(ergebnis):
+            zeilen = []
+            for datei, tabellen in ergebnis.items():
+                abweichend = [f"{t} {v}→{n}" for t, (v, n, _) in tabellen.items() if v != n]
+                summe = sum(n for _, n, _ in tabellen.values())
+                zeilen.append(f"{Path(datei).parent.name}: {summe} Zeilen" + (f", Abweichungen: {', '.join(abweichend)}"
+                                                                             if abweichend else ", vollständig"))
+            self.pg_status.setText("Übernommen. " + "; ".join(zeilen) + " Die App jetzt neu starten.")
+
+        self.f.starte("Daten auf den Server übernehmen", lambda _conn, melde: pg.uebernimm_alle(True, melde), fertig)
 
     def aktualisieren(self):
         aktuell = self.f.modell()

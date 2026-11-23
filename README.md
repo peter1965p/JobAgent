@@ -140,6 +140,20 @@ Die Modellgewichte ändern sich nicht. Die App merkt sich Regeln, Korrekturen, B
 
 Alles Persönliche liegt in `daten/` und ist per `.gitignore` ausgeschlossen. Für die Messung der Suchqualität im Notebook kannst du dort `suchfragen.json` anlegen. Ein Notebook mit gespeicherten Ausgaben enthält ebenfalls Firmen und Bewertungen.
 
+### PostgreSQL statt SQLite (optional)
+
+Standard ist eine SQLite-Datei je Person. Unter System → Daten lässt sich stattdessen ein PostgreSQL-Server eintragen (ab Version 15, mit der Erweiterung **pgvector**; Verbindung nur über TLS). Das Passwort liegt im Schlüsselbund, die Einstellung ohne Passwort in `daten/datenbank.json`. Jede Person bekommt ein eigenes Schema.
+
+```sql
+-- als Administrator auf dem Server
+CREATE ROLE jobsuche LOGIN PASSWORD '…';
+CREATE DATABASE jobsuche OWNER jobsuche;
+\c jobsuche
+CREATE EXTENSION vector;
+```
+
+Vorhandene Daten kopiert „Lokale Daten übernehmen“ (oder `python -m jobsuche.pg uebernehmen`); die SQLite-Dateien bleiben als Sicherung liegen. Die Tests laufen zusätzlich gegen eine Test-Datenbank mit `JOBSUCHE_TEST_PG="host=… dbname=jobsuche_test user=…" pytest`.
+
 ## Claude statt lokalem Modell
 
 Ist Claude Code installiert und angemeldet, fragt die App einmal, ob sie es nutzen darf. Dann laufen Eignungsprüfung, Firmenbewertung, Mailtexte und die Formulierhilfe im CV-Assistenten über `claude -p` mit deinem Abo, ohne Werkzeuge und ohne gespeicherte Sitzung. Lebenslauf, Zeugnis, bestätigte Fakten und Stellenanzeigen gehen dabei an Anthropic. Unter „System“ wechselst du jederzeit zurück zum lokalen Modell. Eine Eignungsprüfung dauert mit Claude unter einer Minute statt mehrerer Minuten, und die Bewertung ist deutlich treffender.
