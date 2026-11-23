@@ -300,6 +300,8 @@ _PLZ_ORT = re.compile(r"\b(\d{5})\s+([^\d,;()\n]+)")
 def ort_aus_sitz(sitz: str) -> str:
     """„Musterweg 1, 12345 Musterstadt“ → „12345 Musterstadt“. Ohne Postleitzahl bleibt der Sitz, wie er ist."""
     sitz = re.sub(r"\s+", " ", sitz or "").strip()
+    # Zusätze der Jobbörsen wie „(+1 weiterer Standort)“ findet keine Ortssuche.
+    sitz = re.sub(r"\s*\(\s*\+\s*\d+\s+weiter\w*\s+(Standort|Arbeitsort|Ort)\w*\s*\)", "", sitz, flags=re.I).strip()
     if not sitz or re.fullmatch(r"(?i)(verschiedene|mehrere|diverse|wechselnde)\s+(arbeits|einsatz)?orte?|deutschlandweit|bundesweit|remote", sitz):
         return ""
     m = _PLZ_ORT.search(sitz)

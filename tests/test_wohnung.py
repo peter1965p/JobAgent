@@ -258,6 +258,8 @@ def test_ort_aus_sitz():
     assert wohnung.ort_aus_sitz("Musterweg 1, 12345 Musterstadt") == "12345 Musterstadt"
     assert wohnung.ort_aus_sitz("Beispielstadt") == "Beispielstadt"
     assert wohnung.ort_aus_sitz("verschiedene Arbeitsorte") == "" and wohnung.ort_aus_sitz("  ") == ""
+    assert wohnung.ort_aus_sitz("Musterhausen (Niederrhein) (+1 weiterer Standort)") == "Musterhausen (Niederrhein)"
+    assert wohnung.ort_aus_sitz("Beispielstadt (+3 weitere Standorte)") == "Beispielstadt"
 
 
 def test_arbeitsorte_aus_bewerbungen_mit_schonfrist(conn):

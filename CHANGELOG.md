@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.13.1 – 2026-11-23
+
+### Behoben
+- Arbeitsorte aus Bewerbungen: Zusätze der Jobbörsen wie „(+1 weiterer Standort)“ im Firmensitz werden entfernt, sonst findet die Ortssuche den Ort nicht.
+
 ## 0.13.0 – 2026-11-23
 
 ### Neu
