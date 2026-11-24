@@ -280,3 +280,12 @@ def test_dateien_eines_mandanten(tmp_path):
         assert db.datei("/anderer/rechner/Lebenslauf.pdf") == tmp_path / "m" / "cv" / "Lebenslauf.pdf"
         fehlt = db.datei("/anderer/rechner/Zeugnis.pdf")
         assert fehlt == tmp_path / "m" / "unterlagen" / "Zeugnis.pdf" and not fehlt.exists()
+
+
+def test_avatar_typ_erkennt_nur_bilder():
+    from jobsuche import mandanten as m
+    assert m.avatar_typ(b"\x89PNG\r\n\x1a\n" + b"0" * 10) == "image/png"
+    assert m.avatar_typ(b"\xff\xd8\xff\xe0" + b"0" * 10) == "image/jpeg"
+    assert m.avatar_typ(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
+    assert m.avatar_typ(b"<svg onload=alert(1)>") is None
+    assert m.avatar_typ(b"GIF89a") is None

@@ -425,7 +425,10 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
             return {"name": person.name(conn), "modell": db.einstellung(conn, "modell", config.STANDARD_MODELL),
                     "stand": uebersicht.stand(conn)["pill"], "demo": False}
         p = mit_conn(k, lies)
-        return {"konto": {"id": k.konto.id, "email": k.konto.email, "name": k.konto.name, "admin": k.konto.admin},
+        hat_avatar = zentral_ausfuehren(lambda r: r.execute(
+            f"SELECT avatar IS NOT NULL FROM {mandanten.ZENTRAL}.konten WHERE id = %s", (k.konto.id,)).fetchone()[0])
+        return {"konto": {"id": k.konto.id, "email": k.konto.email, "name": k.konto.name, "admin": k.konto.admin,
+                          "avatar": bool(hat_avatar)},
                 "mandant": {"id": k.info.id, "name": k.info.name, "claude_erlaubt": k.info.claude_erlaubt},
                 "mandanten": [{"id": m.id, "name": m.name, "rolle": m.mitgliedsrolle} for m in alle],
                 "csrf": k.csrf, "version": __version__, "person": p["name"], "modell": p["modell"],
@@ -445,6 +448,34 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
         except mandanten.KontoFehler as fehler:
             raise HTTPException(403, str(fehler))
         return {"ok": True, "mandant": info.name}
+
+    @app.get("/api/konto/avatar")
+    def avatar_holen(request: Request):
+        k = kontext(request)
+        bild = zentral_ausfuehren(lambda r: mandanten.avatar_lesen(r, k.konto.id))
+        if not bild:
+            raise HTTPException(404, "Kein Avatar.")
+        return Response(bild[0], media_type=bild[1],
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+                                 "Content-Disposition": "inline"})
+
+    @app.post("/api/konto/avatar")
+    async def avatar_hochladen(request: Request, datei: UploadFile = File(...)):
+        k = kontext(request)
+        if not begrenzer_konto.erlaubt(f"av{k.konto.id}"):
+            raise HTTPException(429, "Zu viele Versuche.")
+        inhalt = await datei.read(mandanten.AVATAR_MAX + 1)
+        try:
+            zentral_ausfuehren(lambda r: mandanten.avatar_setzen(r, k.konto.id, inhalt))
+        except mandanten.KontoFehler as fehler:
+            raise HTTPException(400, str(fehler))
+        return {"ok": True}
+
+    @app.delete("/api/konto/avatar")
+    def avatar_entfernen(request: Request):
+        k = kontext(request)
+        zentral_ausfuehren(lambda r: mandanten.avatar_setzen(r, k.konto.id, None))
+        return {"ok": True}
 
     @app.post("/api/konto/passwort")
     def passwort_aendern(daten_in: PasswortIn, request: Request):

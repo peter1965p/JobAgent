@@ -168,9 +168,11 @@ async function ladeIch() {
   Z.csrf = ich.csrf;
   const name = ich.person || ich.konto.name || ich.konto.email;
   const teile = name.trim().split(/\s+/);
-  $("avatar").textContent = teile[0] ? (teile[0][0] + (teile.length > 1 ? teile[teile.length - 1][0] : "")).toUpperCase() : "?";
+  const initialen = teile[0] ? (teile[0][0] + (teile.length > 1 ? teile[teile.length - 1][0] : "")).toUpperCase() : "?";
+  zeigeAvatar(ich.konto.avatar, initialen);
   const ki = ich.modell_wirksam.startsWith("claude:") ? ich.modell_wirksam.slice(7) + " · Claude" : ich.modell_wirksam + " · lokal";
-  $("fusstext").textContent = `${name}\n${ich.mandant.name}${ich.mandanten.length > 1 ? " ▾" : ""}\nJob Agent ${ich.version}\nKI: ${ki}`;
+  const mandant = ich.mandant.name && ich.mandant.name !== name ? `${ich.mandant.name}${ich.mandanten.length > 1 ? " ▾" : ""}\n` : "";
+  $("fusstext").textContent = `${name}\n${mandant}Job Agent ${ich.version}\nKI: ${ki}`;
   if (!Z.auftraege.size) {
     $("pill").textContent = `${ich.stand.firmen} Firmen · ${ich.stand.fakten} Fakten · ${ich.stand.antworten} Antworten`;
     $("pill").className = "pill";
@@ -189,6 +191,11 @@ $("profilknopf").addEventListener("click", (ev) => {
     knopf("Profil", () => { m.hidden = true; zeige("profil"); }),
     knopf("Konto-Einstellungen", () => { m.hidden = true; zeige("konto"); }),
     knopf("Mailkonto", () => { m.hidden = true; zeige("mailkonto"); }),
+    knopf(ich.konto.avatar ? "Avatar ändern" : "Avatar hochladen", () => { m.hidden = true; $("avatardatei").click(); }),
+    ich.konto.avatar ? knopf("Avatar entfernen", async () => {
+      m.hidden = true;
+      if (await versuche(() => api("konto/avatar", "DELETE"))) await ladeIch();
+    }) : null,
     ich.mandanten.length > 1 ? el("div", { class: "menutitel" }, "MANDANT WECHSELN") : null,
     ich.mandanten.length > 1 ? ich.mandanten.map((x) => el("button", { type: "button", class: x.id === ich.mandant.id ? "gewaehlt" : "",
       onclick: async () => { m.hidden = true; if (await versuche(() => api("mandant", "POST", { id: x.id }))) { await ladeIch(); zeige("start"); } } },
@@ -199,6 +206,24 @@ $("profilknopf").addEventListener("click", (ev) => {
 });
 document.addEventListener("click", () => { $("kontomenue").hidden = true; });
 $("menuknopf").addEventListener("click", () => $("seitenleiste").classList.toggle("offen"));
+
+function zeigeAvatar(hat, initialen) {
+  const a = $("avatar");
+  a.textContent = "";
+  a.classList.toggle("bild", !!hat);
+  if (hat) a.append(el("img", { src: `api/konto/avatar?v=${Date.now()}`, alt: initialen }));
+  else a.textContent = initialen;
+}
+
+$("avatardatei").addEventListener("change", async (ev) => {
+  const datei = ev.target.files[0];
+  ev.target.value = "";
+  if (!datei) return;
+  if (datei.size > 512 * 1024) { toast("Das Bild ist zu groß (höchstens 512 KB).", "fehler"); return; }
+  const fd = new FormData();
+  fd.append("datei", datei);
+  if (await versuche(() => api("konto/avatar", "POST", fd))) await ladeIch();
+});
 
 async function abmelden() {
   await versuche(() => api("abmelden", "POST", {}));
