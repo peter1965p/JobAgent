@@ -1,5 +1,5 @@
 #!/usr/sbin/nft -f
-# Ausgehender Verkehr des Webdienstes (Benutzer jobagent): kein Zugriff aufs Heimnetz außer Datenbank, Ollama, KI-Brücke
+# Ausgehender Verkehr des Webdienstes (Benutzer jobagent): kein Zugriff aufs Heimnetz außer Datenbank, Ollama, KI-Brücke, lokalem SearXNG (127.0.0.1:18888)
 # und DNS (Port 53, Resolver laut resolv.conf). Schützt davor, dass Mandanten über Firmen-Websites, SMTP-/IMAP-Server oder SearXNG-Adressen ins LAN greifen (SSRF).
 table inet jobagent_egress
 delete table inet jobagent_egress
@@ -10,6 +10,8 @@ table inet jobagent_egress {
     ct state established,related accept
     ip daddr 192.168.178.214 tcp dport 5432 accept
     ip daddr 192.168.178.86 tcp dport { 11434, 8791 } accept
+    ip daddr 127.0.0.1 tcp dport 18888 accept
+
     udp dport 53 accept
     tcp dport 53 accept
     ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4 } counter reject
