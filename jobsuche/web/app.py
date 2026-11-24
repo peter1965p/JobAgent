@@ -497,7 +497,7 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
             ollama = ""
         except llm.LLMFehler as fehler:
             lokal_modelle, ollama = [], str(fehler)
-        modelle = lokal_modelle + (llm.CLAUDE_MODELLE if k.info.claude_erlaubt else [])
+        modelle = (llm.CF_MODELLE if llm.cf_verfuegbar() else []) + lokal_modelle + (llm.CLAUDE_MODELLE if k.info.claude_erlaubt else [])
         aktuell = mit_conn(k, lambda conn: db.einstellung(conn, "modell", config.STANDARD_MODELL))
         return {"modell": aktuell, "modelle": modelle, "claude_erlaubt": k.info.claude_erlaubt, "ollama_problem": ollama}
 
@@ -508,7 +508,9 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
             raise HTTPException(403, "Claude ist für diesen Mandanten nicht freigegeben.")
         if llm.ist_claude(daten_in.modell) and daten_in.modell not in llm.CLAUDE_MODELLE:
             raise HTTPException(400, "Unbekanntes Modell.")
-        if not re.fullmatch(r"[\w.:\-/]{1,100}", daten_in.modell):
+        if llm.ist_cf(daten_in.modell) and daten_in.modell not in llm.CF_MODELLE:
+            raise HTTPException(400, "Unbekanntes Modell.")
+        if not re.fullmatch(r"[\w.:\-/@]{1,100}", daten_in.modell):
             raise HTTPException(400, "Unbekanntes Modell.")
         mit_conn(k, lambda conn: db.setze_einstellung(conn, "modell", daten_in.modell))
         return {"ok": True}

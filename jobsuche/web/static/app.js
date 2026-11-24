@@ -170,7 +170,8 @@ async function ladeIch() {
   const teile = name.trim().split(/\s+/);
   const initialen = teile[0] ? (teile[0][0] + (teile.length > 1 ? teile[teile.length - 1][0] : "")).toUpperCase() : "?";
   zeigeAvatar(ich.konto.avatar, initialen);
-  const ki = ich.modell_wirksam.startsWith("claude:") ? ich.modell_wirksam.slice(7) + " · Claude" : ich.modell_wirksam + " · lokal";
+  const m = ich.modell_wirksam;
+  const ki = m.startsWith("claude:") ? m.slice(7) + " · Claude" : m.startsWith("cf:") ? m.split("/").pop() + " · Cloudflare" : m + " · lokal";
   const mandant = ich.mandant.name && ich.mandant.name !== name ? `${ich.mandant.name}${ich.mandanten.length > 1 ? " ▾" : ""}\n` : "";
   $("fusstext").textContent = `${name}\n${mandant}Job Agent ${ich.version}\nKI: ${ki}`;
   if (!Z.auftraege.size) {

@@ -191,6 +191,74 @@ def _claude_chat(modell: str, system: str, nutzer: str, schema: dict) -> dict:
     return ergebnis
 
 
+# --- Cloudflare Workers AI ---------------------------------------------------------------------------------------------
+# Rechnet auf GPUs bei Cloudflare über einen eigenen Worker (Bearer-Token). Daten verlassen dabei das Haus wie bei Claude.
+CF_PREFIX = "cf:"
+CF_MODELLE = ["cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "cf:@cf/meta/llama-3.1-8b-instruct-fast"]
+CF_ZEIT = 120
+
+
+def ist_cf(modell: str) -> bool:
+    return modell.startswith(CF_PREFIX)
+
+
+def _cf_zugang() -> tuple[str, str]:
+    """URL und Token: im Webdienst aus der Umgebung, am Desktop URL aus der Umgebung bzw. dem Schlüsselbund."""
+    url = os.environ.get("JOBAGENT_CF_KI_URL", "").rstrip("/")
+    token = os.environ.get("JOBAGENT_CF_KI_TOKEN", "")
+    if not (url and token):
+        try:
+            import keyring
+            url = url or (keyring.get_password("jobsuche", "cf-ki-url") or "").rstrip("/")
+            token = token or keyring.get_password("jobsuche", "cf-ki") or ""
+        except Exception:  # kein Schlüsselbund (Server, Tests)
+            pass
+    return url, token
+
+
+def cf_verfuegbar() -> bool:
+    url, token = _cf_zugang()
+    return bool(url and token)
+
+
+def name_kurz(modell: str) -> str:
+    """Anzeigename: „llama-3.3-70b … · Cloudflare“, „claude-haiku-5-5 · Claude“, „qwen2.5:3b · lokal“."""
+    if ist_claude(modell):
+        return f"{modell[len(CLAUDE_PREFIX):]} · Claude"
+    if ist_cf(modell):
+        return f"{modell.rsplit('/', 1)[-1]} · Cloudflare"
+    return f"{modell} · lokal"
+
+
+def _cf_chat(modell: str, system: str, nutzer: str, schema: dict, temperatur: float) -> dict:
+    url, token = _cf_zugang()
+    if not (url and token):
+        raise LLMFehler("Workers AI ist nicht eingerichtet.")
+    for versuch in range(2):
+        try:
+            antwort = httpx.post(f"{url}/v1/chat", timeout=CF_ZEIT, headers={"Authorization": f"Bearer {token}"},
+                                 json={"model": modell[len(CF_PREFIX):], "system": system, "prompt": nutzer,
+                                       "schema": schema, "temperatur": temperatur})
+        except httpx.HTTPError as fehler:
+            raise LLMFehler("Workers AI ist nicht erreichbar.") from fehler
+        if antwort.status_code != 200:
+            try:
+                meldung = antwort.json().get("fehler", "")
+            except ValueError:
+                meldung = ""
+            raise LLMFehler(f"Workers AI meldet {antwort.status_code}: {str(meldung)[:200]}")
+        ergebnis = antwort.json().get("antwort")
+        if isinstance(ergebnis, str):
+            anfang, ende = ergebnis.find("{"), ergebnis.rfind("}")
+            try:
+                ergebnis = json.loads(ergebnis[anfang:ende + 1]) if anfang >= 0 else None
+            except ValueError:
+                ergebnis = None
+        if isinstance(ergebnis, dict):
+            return ergebnis
+    raise LLMFehler("Workers AI hat zweimal kein gültiges JSON geliefert.")
+
+
 AUSWEICHEN: list[str] = []  # Gründe, aus denen statt Claude das lokale Modell lief, für Meldungen und Protokoll
 
 
@@ -198,6 +266,8 @@ def beschriftung(modell: str, seit: int) -> str:
     """Name für Protokoll und Anzeige. Ist seit dem Stand `seit` von AUSWEICHEN ausgewichen worden, steht das dabei."""
     if ist_claude(modell) and len(AUSWEICHEN) > seit:
         return f"{config.STANDARD_MODELL} statt Claude: {AUSWEICHEN[-1]}"
+    if ist_cf(modell) and len(AUSWEICHEN) > seit:
+        return f"{config.STANDARD_MODELL} statt Workers AI: {AUSWEICHEN[-1]}"
     return modell
 
 
@@ -215,6 +285,12 @@ def chat(modell: str, system: str, nutzer: str, schema: dict, temperatur: float 
         # Lieber schlechter als gar nicht: Das lokale Modell übernimmt.
         AUSWEICHEN.append(grund)
         modell = config.STANDARD_MODELL
+    if ist_cf(modell):
+        try:
+            return _cf_chat(modell, system, nutzer, schema, temperatur)
+        except LLMFehler as fehler:
+            AUSWEICHEN.append(f"Workers AI ging nicht ({fehler}).")
+            modell = config.STANDARD_MODELL
     nutzlast = {
         "model": modell,
         "stream": False,

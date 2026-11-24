@@ -2649,6 +2649,8 @@ class SystemSeite(Seite):
                 + (f", zuletzt {werte}." if werte else ".") + (f" {llm.claude_gesperrt()}" if llm.claude_gesperrt() else ""))
         else:
             self.status.setText(self.status.text() + f" {claude}")
+        if llm.cf_verfuegbar():
+            namen = [*namen, *llm.CF_MODELLE]
         self.auswahl.addItems(namen or [aktuell])
         self.auswahl.setCurrentText(aktuell)
         if namen and aktuell not in namen:
@@ -3147,9 +3149,12 @@ class KontoDialog(QDialog):
             lage.addWidget(label(str(fehler), "hinweis", True))
         if not llm.claude_status():
             modelle += llm.CLAUDE_MODELLE
+        if llm.cf_verfuegbar():
+            modelle += llm.CF_MODELLE
         aktuell = f.modell()
         for m in dict.fromkeys([aktuell, *modelle]):
-            self.modell.addItem(m[len(llm.CLAUDE_PREFIX):] + " (Claude)" if llm.ist_claude(m) else m + " (lokal)", m)
+            name, anbieter = llm.name_kurz(m).rsplit(" · ", 1)
+            self.modell.addItem(f"{name} ({anbieter})", m)
         reihe = QHBoxLayout()
         reihe.addWidget(self.modell, 1)
         reihe.addWidget(knopf("Übernehmen", self.ki_waehlen))
@@ -3379,7 +3384,7 @@ class Hauptfenster(QMainWindow):
         name = person.name(self.conn)
         self.avatar.setText(person.initialen(name))
         mandant = f"\n{self.konto.mandant.name}" + (" ▾" if len(self.konto.mandanten) > 1 else "") if self.konto else ""
-        ki_text = f"{self.modell()[len(llm.CLAUDE_PREFIX):]} · Claude" if llm.ist_claude(self.modell()) else f"{self.modell()} · lokal"
+        ki_text = llm.name_kurz(self.modell())
         self.fuss_text.setText(f"{name or 'Noch kein Profil'}{mandant}\nJob Agent {__version__}\nKI: {ki_text}")
         if not self.warteschlange:
             self._zeige_stand()
