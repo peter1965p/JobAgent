@@ -64,7 +64,7 @@ class AnmeldeFenster(QDialog):
         lage = QVBoxLayout(self)
         lage.setContentsMargins(28, 26, 28, 24)
         lage.setSpacing(10)
-        self.logo = QLabel("◆ Job Agent")
+        self.logo = QLabel("Job Agent")
         self.logo.setObjectName("logo")
         lage.addWidget(self.logo)
         unter = QLabel("Dein Mailkonto ist dein Zugang: Mailadresse und Mailpasswort genügen, dein Mailserver prüft das Passwort. "
@@ -142,7 +142,7 @@ class AnmeldeFenster(QDialog):
             return
         neu = anmeldung.ist_neu(self.email.text())
         self.name.setVisible(neu)
-        self.logo.setText("◆ Konto anlegen" if neu else "◆ Job Agent")
+        self.logo.setText("Konto anlegen" if neu else "Job Agent")
         self.anmelden_knopf.setText("Konto anlegen" if neu else "Anmelden")
 
     def _fuelle_passwort(self):

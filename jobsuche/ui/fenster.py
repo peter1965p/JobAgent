@@ -3291,7 +3291,7 @@ class Hauptfenster(QMainWindow):
         seitenlage = QVBoxLayout(leiste)
         seitenlage.setContentsMargins(14, 18, 14, 14)
         seitenlage.setSpacing(2)
-        seitenlage.addWidget(label("◆ Job Agent", "logo"))
+        seitenlage.addWidget(label("Job Agent", "logo"))
         seitenlage.addWidget(label("Firmen · Fakten · Lokale KI", "sidebarUnter"))
         seitenlage.addSpacing(10)
 
