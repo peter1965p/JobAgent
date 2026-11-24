@@ -612,13 +612,11 @@ def test_gesendet_seite_zeigt_falsche_adresse_und_kopiert(app, f):
 
 def test_suche_seite_neue_stellenquellen_und_dialoge(app, f, monkeypatch):
     from jobsuche import postfach, quellen, suche
-    gemerkt, schluessel = {}, {}
+    gemerkt = {}
     vorschlag = postfach.Postfach("imap.example.org", 143, "p@example.org", sicherheit="starttls")
     monkeypatch.setattr(postfach, "vorschlaege", lambda conn, home=None: [vorschlag])
     monkeypatch.setattr(postfach, "passwort", lambda conn, p: "")
     monkeypatch.setattr(postfach, "merke_passwort", lambda p, wert: gemerkt.update({p: wert}))
-    monkeypatch.setattr(quellen, "api_schluessel", lambda name: "")
-    monkeypatch.setattr(quellen, "merke_api_schluessel", lambda name, wert: schluessel.update({name: wert}))
     auftraege = []
     monkeypatch.setattr(suche, "suche_ueberall", lambda conn, auftrag, fort=None, *a, **k: auftraege.append(auftrag) or
                         {"treffer": [], "hinweise": ["Job-Alerts: Bei 2 ist der Ort unklar, sie bleiben drin."]})
@@ -630,17 +628,12 @@ def test_suche_seite_neue_stellenquellen_und_dialoge(app, f, monkeypatch):
     kennwort.setText("geheim")
     dialog.speichere(f.conn)
     assert gemerkt == {vorschlag: "geheim"} and postfach.gewaehlte(f.conn) == [vorschlag]
-    sd = fenster.SchluesselDialog(s)
-    sd.felder["adzuna"].setText("id:key")
-    sd.speichere()
-    assert schluessel == {"adzuna": "id:key"}
     s.was.setText("IT Support")
     s.q_postfach.setChecked(True)
-    s.q_adzuna.setChecked(True)
     s.stichwoerter.setText("Admin, Support")
     s.suchen()
     warte(app, f)
-    assert {"postfach", "adzuna"} <= set(auftraege[-1].quellen)
+    assert "postfach" in auftraege[-1].quellen
     assert fenster.db.einstellung(f.conn, "suche.stichwoerter", "") == "Admin, Support"
     assert "Ort unklar" in s.ausfaelle.text()
 

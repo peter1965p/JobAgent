@@ -320,7 +320,7 @@ function tabelle(kopf, zeilen, sortiere, sortierung) {
 const SPALTEN = [["naehe", "Nähe"], ["firma", "Firma"], ["titel", "Worum es geht"], ["ort", "Ort"], ["km", "km"], ["quelle", "Quelle"],
   ["status", "Status"], ["ki", "KI"], ["alter", "Alter"]];
 const QUELLEN = [["verzeichnis", "Firmenverzeichnis"], ["internet", "Internet"], ["jobboerse", "Jobbörse"], ["arbeitnow", "Arbeitnow"],
-  ["postfach", "Job-Alerts"], ["portale", "Portale"], ["adzuna", "Adzuna"], ["jooble", "Jooble"]];
+  ["postfach", "Job-Alerts"], ["portale", "Portale"]];
 const S = { seite: 0, pro: 50, sort: "", ab: false, gewaehlt: null };
 
 SEITEN.suche = async (ziel) => {
@@ -425,7 +425,7 @@ SEITEN.suche = async (ziel) => {
         knopf("Passende Firmen finden", () => auftrag("suche", sammeln("passende"), nachSuche), "primaer"),
         knopf("Mit diesen Angaben suchen", () => auftrag("suche", sammeln("suchen"), nachSuche), "blau")))),
     el("div", { class: "zweispaltig" }, karte("Treffer", el("p", { class: "gedimmt klein" },
-      "Die Nähe vergleicht nur Name und Kurztext mit deinen Fakten. Daten: © OpenStreetMap-Mitwirkende, Stellen auch von arbeitnow.com, Adzuna und Jooble."),
+      "Die Nähe vergleicht nur Name und Kurztext mit deinen Fakten. Daten: © OpenStreetMap-Mitwirkende, Stellen auch von arbeitnow.com."),
     hinweise, liste), karte("Details", details)));
   await zeigeTreffer();
 };

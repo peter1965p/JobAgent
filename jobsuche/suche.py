@@ -354,7 +354,7 @@ class Auftrag:
 def gespeicherter_auftrag(conn: sqlite3.Connection) -> Auftrag:
     """Die Angaben der Suchseite gelten auch für den Nachtlauf."""
     lies = lambda name, vorgabe="": db.einstellung(conn, f"suche.{name}", vorgabe)
-    gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q)
+    gewaehlt = tuple(q for q in lies("quellen", ",".join(Auftrag.quellen)).split(",") if q and q not in ("adzuna", "jooble"))
     return Auftrag(lies("begriffe"), lies("ort") or suchort(conn), lies("land", "de"), int(lies("umkreis", "50")),
                    lies("branche"), gewaehlt, lies("searxng"), lies("arbeitszeit"), lies("nur_ki") == "1",
                    int(lies("max_tage", str(MAX_TAGE)) or 0), lies("aufgefrischte", "1") == "1",
@@ -520,7 +520,7 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
                 hinweise.append(hinweis)
             return passend
         quelle("Internet", internet)
-    if not begriffe and {"jobboerse", "arbeitnow", "portale", "adzuna", "jooble"} & set(auftrag.quellen):
+    if not begriffe and {"jobboerse", "arbeitnow", "portale"} & set(auftrag.quellen):
         hinweise.append("Stellenbörsen übersprungen: Es fehlen noch Berufe. „Passende Firmen finden“ leitet sie aus deinen Fakten ab.")
     elif "jobboerse" in auftrag.quellen:
         if auftrag.land != "de":
@@ -558,15 +558,6 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
                 hinweise.extend(ausfaelle)
                 return gefiltert("Portale", stellen)
             quelle("Portale", portale)
-    for name, schluessel, abruf in (("Adzuna", "adzuna", quellen.adzuna), ("Jooble", "jooble", quellen.jooble)):
-        if schluessel not in auftrag.quellen or not begriffe:
-            continue
-        api = quellen.api_schluessel(schluessel)
-        if not api:
-            hinweise.append(f"{name}: Es ist noch kein Schlüssel hinterlegt.")
-            continue
-        quelle(name, lambda abruf=abruf, api=api, name=name: gefiltert(
-            name, abruf(begriffe, auftrag.ort, auftrag.umkreis, auftrag.land, api, client)))
     if auftrag.arbeitszeit and {"verzeichnis", "internet"} & set(auftrag.quellen):
         hinweise.append(f"Arbeitszeit: Verzeichnis und Internet liefern Firmen, keine Stellen. Dort gilt „{ARBEITSZEIT[auftrag.arbeitszeit]}“ nicht.")
     if auftrag.max_tage:

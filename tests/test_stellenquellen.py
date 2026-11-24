@@ -222,34 +222,6 @@ def test_portale_werden_nur_aus_der_trefferliste_gelesen(conn):
     assert muster["url"] == "https://www.linkedin.com/jobs/view/4481870394/" and muster["referenz"] == "linkedin:4481870394"
 
 
-def test_aggregatoren_mit_schluessel_und_ohne(conn, monkeypatch):
-    def handler(anfrage):
-        if anfrage.url.host == "api.adzuna.com":
-            assert anfrage.url.params["app_id"] == "id1" and anfrage.url.params["where"] == "Kassel"
-            return httpx.Response(200, json={"results": [
-                {"id": "77", "title": "<strong>IT</strong>-Administrator", "company": {"display_name": "Adzuna Muster GmbH"},
-                 "location": {"display_name": "Kassel, Nordhessen"}, "redirect_url": "https://www.adzuna.de/land/ad/77",
-                 "description": "Wir suchen <b>dich</b> für unsere IT."}]})
-        if anfrage.url.host == "de.jooble.org":
-            assert anfrage.url.path == "/api/geheim" and json.loads(anfrage.content)["radius"] == "40"
-            return httpx.Response(200, json={"jobs": [
-                {"id": 5, "title": "Support Specialist", "company": "Jooble Muster AG", "location": "Göttingen (Niedersachsen)",
-                 "link": "https://de.jooble.org/desc/5", "snippet": "&nbsp;Kurztext"}]})
-        return _ortsdienst({**ORTE, "Göttingen": ORTE["Göttingen"]})(anfrage)
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    auftrag = suche.Auftrag("IT Support, Administrator", "Kassel", "de", 50, "it", ("adzuna", "jooble"))
-    monkeypatch.setattr(quellen, "api_schluessel", lambda name: "")
-    ergebnis = suche.suche_ueberall(conn, auftrag, client=client)
-    assert ergebnis["treffer"] == [] and any("Adzuna: Es ist noch kein Schlüssel" in h for h in ergebnis["hinweise"])
-    monkeypatch.setattr(quellen, "api_schluessel", lambda name: {"adzuna": "id1:key1", "jooble": "geheim"}[name])
-    ergebnis = suche.suche_ueberall(conn, auftrag, client=client)
-    treffer = {t["firma"]: t for t in ergebnis["treffer"]}
-    assert set(treffer) == {"Adzuna Muster GmbH", "Jooble Muster AG"}
-    assert treffer["Adzuna Muster GmbH"]["titel"] == "IT-Administrator"
-    assert treffer["Adzuna Muster GmbH"]["beschreibung"] == "Wir suchen dich für unsere IT."
-
-
 def test_uebernahme_eines_portaltreffers_ruft_weder_portal_noch_jobboerse(conn):
     anfragen = []
 

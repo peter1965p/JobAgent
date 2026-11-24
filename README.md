@@ -96,7 +96,6 @@ Mails an Firmen ohne vorherigen Kontakt können rechtlich heikel sein (§ 7 UWG,
 | Internet (eigene SearXNG-Instanz) | Firmenseiten und Impressen zu deinen Berufen | Musst du selbst betreiben; SearXNG fragt dafür öffentliche Suchmaschinen ab, deren Bedingungen das teils untersagen |
 | Job-Alerts (eigenes Postfach) | Stellen aus Alert-Mails von LinkedIn, Indeed, StepStone, XING, Jobs für Niedersachsen, Interamt, Karriereportal Niedersachsen, Jobbörse und heise jobs | Nur was du dort als Alert eingerichtet hast, die letzten 14 Tage, Gmail mit OAuth braucht ein App-Passwort |
 | Portale (über SearXNG) | LinkedIn- und StepStone-Stellen aus der Trefferliste der Suchmaschinen | Nur was die Suchmaschinen kennen, Titel und Ort aus dem Schnipsel; die Suchmaschinen sperren bei vielen Anfragen |
-| Adzuna, Jooble | Stellen vieler Börsen über eine Schnittstelle | Kostenlose Registrierung und Schlüssel nötig; Parameter wie Jooble-Radius nicht gegen die echte Schnittstelle geprüft |
 
 Die App ruft StepStone, Indeed, LinkedIn und andere Portale nie selbst ab und öffnet keine Links aus Alert-Mails, das sind Klick-Zähler. Sie liest nur Mails in deinem Postfach und Trefferlisten der Suchmaschinen. Die Anzeige öffnest du selbst im Browser.
 

@@ -24,7 +24,7 @@ PAUSE = 600
 NAME = "tueroeffner-nacht"
 
 
-STELLENQUELLEN = ("Jobbörse", "Arbeitnow", "(Alert)", "LinkedIn", "StepStone", "Adzuna", "Jooble")
+STELLENQUELLEN = ("Jobbörse", "Arbeitnow", "(Alert)", "LinkedIn", "StepStone")
 
 
 def ist_direkt(treffer: dict) -> bool:

@@ -1,4 +1,4 @@
-"""Ablage für Passwörter und Schlüssel (Mailkonto, Postfächer, Adzuna/Jooble).
+"""Ablage für Passwörter und Schlüssel (Mailkonto, Postfächer).
 
 Desktop: Schlüsselbund des Systems (Dienst „jobsuche“), wie bisher. Web: verschlüsselt (AES-GCM) in der Datenbank des
 Mandanten; der Schlüssel kommt aus der Umgebung des Dienstes (Datei mit Rechten 600) und liegt nie in der Datenbank.

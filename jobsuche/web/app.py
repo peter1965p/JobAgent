@@ -551,7 +551,7 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
     @app.post("/api/suche")
     def suchen(daten_in: SucheIn, request: Request):
         k = kontext(request)
-        erlaubt = {"verzeichnis", "jobboerse", "arbeitnow", "internet", "postfach", "portale", "adzuna", "jooble"}
+        erlaubt = {"verzeichnis", "jobboerse", "arbeitnow", "internet", "postfach", "portale"}
         gewaehlt = tuple(q for q in daten_in.quellen if q in erlaubt)
         if not gewaehlt:
             raise HTTPException(400, "Wähle mindestens eine Quelle.")
