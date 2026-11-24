@@ -142,3 +142,4 @@ label.reihe { flex-wrap: nowrap; gap: 6px; white-space: nowrap; }
 .spacer { flex: 1; }
 .avatar.bild { padding: 0; overflow: hidden; background: transparent; }
 .avatar.bild img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+button:disabled, button.primaer:disabled, button.gefahr:disabled { opacity: .45; cursor: not-allowed; border-color: var(--rand, #444); }
