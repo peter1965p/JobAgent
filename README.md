@@ -182,3 +182,14 @@ Im CV-Assistenten glättet „Mit Claude formulieren“ deine eigene Antwort. De
 ## Alter
 
 Standardmäßig verraten Mail und Qualifikationsprofil das Alter nicht über lange Berufsjahre oder frühe Jahreszahlen: Das Modell schreibt „langjährige Erfahrung“ statt „über 35 Jahre“ und stellt die jüngsten Stationen nach vorn. Rutscht trotzdem etwas durch, zeigt die Prüfung des Entwurfs einen Hinweis, sie sperrt aber nicht. Aufs Profil kommen solche Zitate nicht, die Anforderung zählt trotzdem als belegt. Abschalten lässt sich das unter „Profil“. Dein Zeugnis und dein Lebenslauf bleiben unverändert. Im Gespräch gehört das Thema aktiv auf den Tisch: Dafür fragt die App nach deiner langfristigen Perspektive und nimmt die Antwort in die Agenda auf.
+
+## MCP-Server (für KI-Assistenten)
+
+`python -m jobsuche.mcp_server` stellt den Job Agent als MCP-Server über stdio bereit (Model Context Protocol, SDK `mcp` 2.x).
+Werkzeuge: `stand`, `fakten`, `firmen`, `entwuerfe`, `entwurf_lesen`, `stellen_suchen`, `entwurf_vorschlagen`.
+Senden und Freigeben gibt es bewusst nicht: Das bleibt beim Menschen in der App. Die Anmeldung läuft wie am Desktop
+(Konto aus dem Schlüsselbund, dessen Mandant); ohne PostgreSQL wird die lokale Datenbank genutzt.
+
+```bash
+claude mcp add jobagent --scope user -e PYTHONPATH=$PWD -- $PWD/venv/bin/python -m jobsuche.mcp_server
+```

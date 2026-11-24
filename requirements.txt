@@ -16,3 +16,4 @@ keyring
 psutil
 argon2-cffi
 cryptography
+mcp>=2.3
