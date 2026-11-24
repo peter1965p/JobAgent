@@ -23,7 +23,7 @@ QUELLEN_NAME = {"zeugnis": "Arbeitszeugnis", "lebenslauf": "Lebenslauf", "angabe
 
 
 def ordner() -> Path:
-    return config.DB_PFAD.parent / "cv"
+    return db.datenordner() / "cv"
 
 
 def _dateiname(firma: str) -> str:

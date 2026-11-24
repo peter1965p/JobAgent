@@ -378,18 +378,24 @@ def schluessel(server: dict) -> str:
     return f"postgres:{server['benutzer']}@{server['host']}"
 
 
-def verbinden(server: dict, schema: str | None, schema_sql: str, nachher=None) -> Verbindung:
-    """Verbindet, legt Schema und Tabellen an. `schema=None` = temporäres Schema (Tests)."""
+def verbinden(server: dict, schema: str | None, schema_sql: str, nachher=None, rolle: str | None = None) -> Verbindung:
+    """Verbindet, legt Schema und Tabellen an. `schema=None` = temporäres Schema (Tests).
+
+    Mit `rolle` (Mandant) wechselt die Verbindung vorher per SET ROLE in die Datenbankrolle des Mandanten. Die besitzt
+    nur ihr eigenes Schema; auf andere Schemata und die zentralen Konten hat sie keine Rechte."""
     temporaer = schema is None
     schema = schema or SCHEMA_PRAEFIX + "tmp_" + uuid.uuid4().hex[:12]
     try:
         roh = roh_verbinden(server)
-        roh.execute(pgsql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(pgsql.Identifier(schema)))
+        if rolle:
+            roh.execute(pgsql.SQL("SET ROLE {}").format(pgsql.Identifier(rolle)))
+        else:
+            roh.execute(pgsql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(pgsql.Identifier(schema)))
         roh.execute(pgsql.SQL("SET search_path TO {}, public").format(pgsql.Identifier(schema)))
     except psycopg.Error as e:
         raise _fehler(e) from e
     v = Verbindung(roh, schema, temporaer)
-    kennung = (server["host"], int(server.get("port") or 5432), server["datenbank"], schema)
+    kennung = (server["host"], int(server.get("port") or 5432), server["datenbank"], schema, rolle or "")
     if kennung not in _eingerichtet:  # Jede Hintergrundaufgabe verbindet neu: das Schema nur einmal je Prozess prüfen
         roh.execute("SET client_min_messages TO warning")
         v.executescript(schema_sql)

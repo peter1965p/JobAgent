@@ -29,6 +29,18 @@ class _Pruefung(QRunnable):
             self.signale.fehler.emit(str(fehler))
 
 
+class _KontoPruefung(QRunnable):
+    def __init__(self, email, passwort, signale):
+        super().__init__()
+        self.email, self.passwort, self.signale = email, passwort, signale
+
+    def run(self):
+        try:
+            self.signale.fertig.emit(anmeldung.pruefe_konto(self.email, self.passwort))
+        except (versand.VersandFehler, ValueError) as fehler:
+            self.signale.fehler.emit(str(fehler))
+
+
 class AnmeldeFenster(QDialog):
     """Nach `exec()`: `demo` ist wahr, wenn die Demo gewählt wurde, sonst stehen die Anmeldedaten bereit."""
 
@@ -38,6 +50,8 @@ class AnmeldeFenster(QDialog):
         self.setMinimumWidth(460)
         self.demo = False
         self.ergebnis = None
+        # Mit Mandanten-Datenbank (PostgreSQL + js_zentral): eigenes Konto statt Mailserver-Anmeldung
+        self.kontomodus = anmeldung.konten_verfuegbar()
         self.passwort = ""
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
@@ -57,6 +71,9 @@ class AnmeldeFenster(QDialog):
                        "Beim ersten Mal legt die App dein Konto auf diesem Rechner an. Jede Person hat ihre eigenen Daten.")
         unter.setObjectName("gedimmt")
         unter.setWordWrap(True)
+        if self.kontomodus:
+            unter.setText("Melde dich mit deinem Job-Agent-Konto an (dasselbe wie im Web). Dein Mailkonto brauchst du "
+                          "nur noch zum Senden. Neue Konten gibt es per Einladung über die Web-Verwaltung.")
         lage.addWidget(unter)
         self.email = QLineEdit(self.einstellungen.value("letzte_adresse", "", type=str))
         self.email.setPlaceholderText("Mailadresse")
@@ -69,7 +86,7 @@ class AnmeldeFenster(QDialog):
         lage.addWidget(self.name)
         self.pw = QLineEdit()
         self.pw.setEchoMode(QLineEdit.Password)
-        self.pw.setPlaceholderText("Mailpasswort oder App-Passwort")
+        self.pw.setPlaceholderText("Konto-Passwort" if self.kontomodus else "Mailpasswort oder App-Passwort")
         self.pw.returnPressed.connect(self.anmelden)
         lage.addWidget(self.pw)
 
@@ -120,13 +137,16 @@ class AnmeldeFenster(QDialog):
         (self.pw if self.email.text() else self.email).setFocus()
 
     def _konto_neu(self):
+        if self.kontomodus:
+            self.anmelden_knopf.setText("Anmelden")
+            return
         neu = anmeldung.ist_neu(self.email.text())
         self.name.setVisible(neu)
         self.logo.setText("◆ Konto anlegen" if neu else "◆ Job Agent")
         self.anmelden_knopf.setText("Konto anlegen" if neu else "Anmelden")
 
     def _fuelle_passwort(self):
-        gemerkt = anmeldung.gemerktes_passwort(self.email.text()) if "@" in self.email.text() else ""
+        gemerkt = anmeldung.gemerktes_passwort(self.email.text(), self.kontomodus) if "@" in self.email.text() else ""
         if gemerkt and not self.pw.text():
             self.pw.setText(gemerkt)
             self.merken.setChecked(True)
@@ -165,13 +185,16 @@ class AnmeldeFenster(QDialog):
             return self._zeige_meldung(str(fehler))
         self.passwort = self.pw.text()
         self._beschaeftigt(True)
+        if self.kontomodus:
+            self.pool.start(_KontoPruefung(self.email.text(), self.passwort, self.signale))
+            return
         self.pool.start(_Pruefung(self.email.text(), self.passwort, konto, self.signale))
 
     def _erfolg(self, ergebnis):
         self._beschaeftigt(False)
         self.ergebnis = ergebnis
         self.einstellungen.setValue("letzte_adresse", self.email.text().strip())
-        self.warnung = anmeldung.merke_passwort(self.email.text(), self.passwort, self.merken.isChecked())
+        self.warnung = anmeldung.merke_passwort(self.email.text(), self.passwort, self.merken.isChecked(), self.kontomodus)
         self.accept()
 
     def _server_fehlt(self, text):

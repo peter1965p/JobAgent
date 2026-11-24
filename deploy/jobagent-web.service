@@ -1,0 +1,42 @@
+[Unit]
+Description=Job Agent – Web-Oberfläche (Mandanten)
+After=network-online.target jobagent-egress.service
+Wants=network-online.target
+Requires=jobagent-egress.service
+
+[Service]
+User=jobagent
+Group=jobagent
+WorkingDirectory=/opt/jobagent-web/app
+EnvironmentFile=/etc/jobagent-web.env
+Environment=JOBAGENT_DATEN=/var/lib/jobagent-web
+Environment=JOBAGENT_BIND=127.0.0.1
+Environment=JOBAGENT_PORT=8090
+Environment=JOBAGENT_HOSTS=jobagent.paeffgen-it.de,jobagent-i4w.pages.dev,192.168.178.217,web
+Environment=JOBAGENT_PG_HOST=192.168.178.214
+Environment=JOBAGENT_PG_DB=jobsuche
+Environment=JOBAGENT_PG_USER=jobagent_web
+Environment=JOBAGENT_OLLAMA_URL=http://192.168.178.86:11434
+Environment=JOBAGENT_CLAUDE_BRUECKE_URL=http://192.168.178.86:8791
+Environment=JOBAGENT_NACHTLAUF=1
+Environment=HOME=/var/lib/jobagent-web
+Environment=HF_HOME=/var/lib/jobagent-web/modelle
+Environment=PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
+ExecStart=/opt/jobagent-web/venv/bin/python -m jobsuche.web
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/jobagent-web
+MemoryMax=1200M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -123,20 +123,109 @@ def _schluessel(email: str) -> str:
     return f"login:{_adresse(email)}"
 
 
-def gemerktes_passwort(email: str) -> str:
+def gemerktes_passwort(email: str, konto: bool = False) -> str:
     try:
-        return keyring.get_password(versand.DIENST, _schluessel(email)) or ""
+        return keyring.get_password(versand.DIENST, konto_eintrag(email) if konto else _schluessel(email)) or ""
     except KeyringError:
         return ""
 
 
-def merke_passwort(email: str, passwort: str, merken: bool) -> str | None:
+def merke_passwort(email: str, passwort: str, merken: bool, konto: bool = False) -> str | None:
     """Gibt bei einem Problem eine Meldung zurück. Die Anmeldung selbst scheitert daran nicht."""
+    eintrag = konto_eintrag(email) if konto else _schluessel(email)
     try:
         if merken:
-            keyring.set_password(versand.DIENST, _schluessel(email), passwort)
-        elif gemerktes_passwort(email):
-            keyring.delete_password(versand.DIENST, _schluessel(email))
+            keyring.set_password(versand.DIENST, eintrag, passwort)
+        elif gemerktes_passwort(email, konto):
+            keyring.delete_password(versand.DIENST, eintrag)
     except KeyringError as fehler:
         return f"Der Schlüsselbund ist nicht verfügbar: {fehler}"
     return None
+
+
+# --- Konto-Anmeldung gegen die Mandanten-Datenbank (PostgreSQL mit js_zentral) ------------------------------------------
+# Ist ein Server eingestellt und das zentrale Schema eingerichtet, meldet sich die Desktop-App mit Konto und
+# Konto-Passwort an (wie im Web). Das Mailpasswort dient dann nur noch dem Versand. Ohne Server bleibt alles wie oben.
+
+@dataclass(frozen=True)
+class KontoErgebnis:
+    konto: object  # mandanten.Konto
+    mandant: object  # mandanten.MandantInfo
+    mandanten: tuple = ()
+
+
+def konten_verfuegbar() -> bool:
+    if not db.server():
+        return False
+    from . import mandanten
+    try:
+        with mandanten.zentral_verbinden() as roh:
+            return mandanten.ist_eingerichtet(roh)
+    except Exception:  # Server nicht erreichbar: die Anmeldung meldet das dann selbst
+        return True
+
+
+def konto_eintrag(email: str) -> str:
+    return f"konto:{_adresse(email)}"
+
+
+def pruefe_konto(email: str, passwort: str, mandant_id: int | None = None) -> KontoErgebnis:
+    from . import mandanten
+    if "@" not in email or not passwort:
+        raise versand.AnmeldeFehler("Gib deine Mailadresse und dein Passwort ein.")
+    try:
+        with mandanten.zentral_verbinden() as roh:
+            konto = mandanten.anmelden(roh, email, passwort, "desktop")
+            info = mandanten.mandant_fuer(roh, konto.id, mandant_id)
+            return KontoErgebnis(konto, info, tuple(mandanten.mandanten_von(roh, konto.id)))
+    except mandanten.KontoFehler as fehler:
+        raise versand.AnmeldeFehler(str(fehler)) from None
+    except (sqlite3.Error, OSError) as fehler:
+        raise versand.NichtErreichbar(f"Die Datenbank ist nicht erreichbar: {str(fehler).splitlines()[0][:200]}") from None
+    except Exception as fehler:  # psycopg-Fehler beim Verbinden
+        if type(fehler).__module__.startswith("psycopg"):
+            raise versand.NichtErreichbar(f"Die Datenbank ist nicht erreichbar: {str(fehler).splitlines()[0][:200]}") from None
+        raise
+
+
+def mandant_ordner(info) -> Path:
+    """Dateien des Mandanten auf diesem Rechner. Die übernommene Altdatenbank behält ihren Ordner `daten/`."""
+    from . import pg
+    if info.schema == pg.schema_fuer(config.DATEN / "jobsuche.db", config.DATEN):
+        return config.DATEN
+    return config.DATEN / "mandanten" / str(info.id)
+
+
+def oeffne_mandant(ergebnis: KontoErgebnis) -> None:
+    from . import mandanten
+    ordner = mandant_ordner(ergebnis.mandant)
+    db.setze_mandant(mandanten.als_mandant(ergebnis.mandant, ordner))
+    config.DB_PFAD = ordner / "jobsuche.db"  # nur für Dateien daneben; gelesen wird aus dem Schema des Mandanten
+    config.DEMO = False
+    conn = db.verbinden()
+    try:
+        if not person.lade(conn)["email"]:
+            person.setze_email(conn, ergebnis.konto.email)
+        db.protokolliere(conn, "Anmeldung", f"Konto, Mandant {ergebnis.mandant.name}")
+    finally:
+        conn.close()
+
+
+def wechsle_mandant(ergebnis: KontoErgebnis, mandant_id: int) -> KontoErgebnis:
+    from . import mandanten
+    with mandanten.zentral_verbinden() as roh:
+        info = mandanten.mandant_fuer(roh, ergebnis.konto.id, mandant_id)
+    return KontoErgebnis(ergebnis.konto, info, ergebnis.mandanten)
+
+
+def aendere_konto_passwort(ergebnis: KontoErgebnis, alt: str, neu: str) -> None:
+    from . import mandanten
+    try:
+        with mandanten.zentral_verbinden() as roh:
+            mandanten.aendere_passwort(roh, ergebnis.konto.id, alt, neu)
+    except mandanten.KontoFehler as fehler:
+        raise ValueError(str(fehler)) from None
+
+
+def schliesse_mandant() -> None:
+    db.setze_mandant(None)

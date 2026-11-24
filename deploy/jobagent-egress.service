@@ -1,0 +1,13 @@
+[Unit]
+Description=Job Agent – Ausgangsfilter (nftables) für den Webdienst
+Before=jobagent-web.service
+After=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/jobagent-web/egress.nft
+ExecStop=/usr/sbin/nft delete table inet jobagent_egress
+
+[Install]
+WantedBy=multi-user.target

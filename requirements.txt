@@ -14,3 +14,5 @@ reportlab
 pytest
 keyring
 psutil
+argon2-cffi
+cryptography

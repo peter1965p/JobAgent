@@ -8,8 +8,10 @@ DB_PFAD = DATEN / "jobsuche.db"  # Nach der Anmeldung: die Datenbank der angemel
 DEMO = False  # In der Demo gehen keine Mails raus.
 MODELLE = DATEN / "modelle"
 
-OLLAMA_URL = "http://localhost:11434"
-STANDARD_MODELL = "qwen2.5:3b"
+import os
+
+OLLAMA_URL = os.environ.get("JOBAGENT_OLLAMA_URL", "http://localhost:11434")
+STANDARD_MODELL = os.environ.get("JOBAGENT_STANDARD_MODELL", "qwen2.5:3b")
 EMBEDDING_MODELL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 EMBEDDING_DIM = 384
 

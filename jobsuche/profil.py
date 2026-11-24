@@ -54,14 +54,14 @@ def setze_anhang(conn: sqlite3.Connection, dokument_id: int, anhang: bool) -> No
 
 
 def anhaenge(conn: sqlite3.Connection) -> list[Path]:
-    return [Path(z[0]) for z in conn.execute("SELECT pfad FROM dokumente WHERE anhang = 1 ORDER BY id")]
+    return [db.datei(z[0]) for z in conn.execute("SELECT pfad FROM dokumente WHERE anhang = 1 ORDER BY id")]
 
 
 def anhaenge_des_entwurfs(conn: sqlite3.Connection, entwurf_id: int) -> list[Path]:
     """Eigene Anhänge des Entwurfs, etwa der Lebenslauf für die Stelle, sonst die allgemeinen."""
     zeile = conn.execute("SELECT anhaenge FROM entwuerfe WHERE id = ?", (entwurf_id,)).fetchone()
     if zeile and zeile[0] is not None:
-        return [Path(p) for p in json.loads(zeile[0])]
+        return [db.datei(p) for p in json.loads(zeile[0])]
     return anhaenge(conn)
 
 
@@ -92,7 +92,7 @@ def lies_unterlagen(conn: sqlite3.Connection) -> list[str]:
     """Liest geänderte Unterlagen ein und gibt Probleme als Klartext zurück."""
     probleme = []
     for zeile in conn.execute("SELECT * FROM dokumente ORDER BY id").fetchall():
-        pfad, titel = Path(zeile["pfad"]), zeile["titel"]
+        pfad, titel = db.datei(zeile["pfad"]), zeile["titel"]
         if not pfad.exists():
             probleme.append(f"{titel}: Datei fehlt ({pfad})")
             continue

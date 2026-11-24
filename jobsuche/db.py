@@ -1,6 +1,9 @@
+import contextvars
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -218,7 +221,78 @@ def existiert(pfad: Path | str) -> bool:
     return Path(pfad).exists()
 
 
+# --- Mandant: Konto-Anmeldung gegen die zentrale Tabelle (nur PostgreSQL) -------------------------------------------
+# Ist ein Mandant aktiv, verbindet `verbinden()` ohne Pfad mit seinem Schema und wechselt per SET ROLE in seine
+# Datenbankrolle. Die Rolle darf nur ihr eigenes Schema benutzen: Fremde Daten verweigert der Server, nicht die App.
+# Desktop: ein Mandant je Prozess (setze_mandant). Web: je Anfrage bzw. Hintergrundauftrag (mit_mandant, Kontextvariable).
+
+@dataclass(frozen=True)
+class Mandant:
+    id: int
+    name: str
+    schema: str
+    rolle: str
+    ordner: Path  # Dateien des Mandanten: Lebenslauf für Stellen, Agenda, hochgeladene Unterlagen
+    claude_erlaubt: bool = False
+
+
+_mandant_prozess: Mandant | None = None
+_mandant_kontext: contextvars.ContextVar = contextvars.ContextVar("mandant", default=None)
+
+
+def aktiver_mandant() -> Mandant | None:
+    return _mandant_kontext.get() or _mandant_prozess
+
+
+def setze_mandant(mandant: Mandant | None) -> None:
+    """Desktop: gilt für den ganzen Prozess bis zum Abmelden."""
+    global _mandant_prozess
+    _mandant_prozess = mandant
+
+
+@contextmanager
+def mit_mandant(mandant: Mandant | None):
+    """Web: gilt nur im aktuellen Kontext (Anfrage oder Auftrag), andere Threads sehen ihn nicht."""
+    token = _mandant_kontext.set(mandant)
+    try:
+        yield mandant
+    finally:
+        _mandant_kontext.reset(token)
+
+
+def datenordner() -> Path:
+    """Wo Dateien der angemeldeten Person liegen: beim Mandanten dessen Ordner, sonst neben der SQLite-Datei."""
+    m = aktiver_mandant()
+    return m.ordner if m else Path(config.DB_PFAD).parent
+
+
+def datei(pfad: Path | str) -> Path:
+    """Pfad einer gespeicherten Datei. Liegt sie beim Mandanten nicht am gespeicherten Ort (z. B. Pfad vom Desktop,
+    Zugriff übers Web), zählt die gleichnamige Datei in seinem Ordner `unterlagen/` oder `cv/`."""
+    pfad = Path(pfad)
+    m = aktiver_mandant()
+    if m is None:
+        return pfad
+    try:
+        if pfad.exists():
+            return pfad
+    except OSError:  # z. B. Pfad unter /home, auf dem Server gesperrt
+        pass
+    for unter in ("unterlagen", "cv"):
+        kandidat = m.ordner / unter / pfad.name
+        if kandidat.is_file():
+            return kandidat
+    return m.ordner / "unterlagen" / pfad.name  # gibt es nicht: meldet sauber „fehlt“
+
+
 def verbinden(pfad: Path | str | None = None):
+    mandant = aktiver_mandant() if pfad is None else None
+    if mandant is not None:
+        from . import pg
+        if not server():
+            raise sqlite3.OperationalError("Mandanten gibt es nur mit PostgreSQL; es ist kein Server eingestellt.")
+        mandant.ordner.mkdir(parents=True, exist_ok=True)
+        return pg.verbinden(server(), mandant.schema, SCHEMA, _ergaenze_spalten, rolle=mandant.rolle)
     pfad = pfad or config.DB_PFAD
     if _auf_server(pfad):
         from . import pg

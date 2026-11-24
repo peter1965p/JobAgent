@@ -4,7 +4,9 @@ Bei Claude gehen Prompt und Unterlagen an Anthropic. Darum wird es nie still gew
 Andere Cloud-Anbieter gibt es bewusst nicht.
 """
 
+import contextvars
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -114,7 +116,43 @@ def _merke_nutzung(info: dict) -> None:
             pass
 
 
+# Web: Claude läuft über das Abo des Betreibers (KI-Brücke auf seinem PC). Erlaubt nur für freigegebene Mandanten; alle anderen
+# bekommen das lokale Modell, auch wenn in ihren Einstellungen Claude steht. Desktop: immer erlaubt (eigenes Abo).
+claude_erlaubt: contextvars.ContextVar = contextvars.ContextVar("claude_erlaubt", default=True)
+BRUECKE_URL = os.environ.get("JOBAGENT_CLAUDE_BRUECKE_URL", "").rstrip("/")
+BRUECKE_TOKEN = os.environ.get("JOBAGENT_CLAUDE_BRUECKE_TOKEN", "")
+
+
+def _claude_bruecke(modell: str, system: str, nutzer: str, schema: dict) -> dict:
+    try:
+        antwort = httpx.post(f"{BRUECKE_URL}/frage", timeout=CLAUDE_ZEIT + 15, headers={"X-Bruecke-Token": BRUECKE_TOKEN},
+                             json={"prompt": nutzer, "system": system, "json_schema": schema,
+                                   "modell": modell[len(CLAUDE_PREFIX):]})
+    except httpx.HTTPError as fehler:
+        raise LLMFehler("Die KI-Brücke zu Claude ist nicht erreichbar.") from fehler
+    if antwort.status_code != 200:
+        try:
+            meldung = antwort.json().get("fehler", "")
+        except ValueError:
+            meldung = ""
+        raise LLMFehler(f"KI-Brücke meldet {antwort.status_code}: {meldung[:200]}")
+    text = str(antwort.json().get("antwort") or "")
+    try:
+        ergebnis = json.loads(text)
+    except ValueError:
+        anfang, ende = text.find("{"), text.rfind("}")
+        try:
+            ergebnis = json.loads(text[anfang:ende + 1]) if anfang >= 0 else None
+        except ValueError:
+            ergebnis = None
+    if not isinstance(ergebnis, dict):
+        raise LLMFehler("Claude hat kein gültiges JSON geliefert.")
+    return ergebnis
+
+
 def _claude_chat(modell: str, system: str, nutzer: str, schema: dict) -> dict:
+    if BRUECKE_URL:
+        return _claude_bruecke(modell, system, nutzer, schema)
     pfad = claude_pfad()
     if not pfad:
         raise LLMFehler("Claude Code ist nicht installiert. Wähle unter „System“ ein lokales Modell.")
@@ -165,6 +203,8 @@ def beschriftung(modell: str, seit: int) -> str:
 
 def chat(modell: str, system: str, nutzer: str, schema: dict, temperatur: float = 0.3) -> dict:
     """Fragt das Modell mit JSON-Schema an. Ungültiges JSON wird einmal wiederholt."""
+    if ist_claude(modell) and not claude_erlaubt.get():
+        modell = config.STANDARD_MODELL  # nicht freigegeben: still das lokale Modell, ohne Rückfall-Meldung
     if ist_claude(modell):
         grund = claude_gesperrt()
         if not grund:

@@ -618,26 +618,19 @@ JOOBLE_RADIEN = (0, 4, 8, 16, 26, 40, 80)  # Laut Doku feste Stufen in km, nicht
 
 
 def api_schluessel(name: str) -> str:
-    import keyring
-    from keyring.errors import KeyringError
-    from . import versand
-    try:
-        return keyring.get_password(versand.DIENST, f"api:{name}") or ""
-    except KeyringError:
-        return ""
+    from . import geheim
+    return geheim.hole(f"api:{name}") or ""
 
 
 def merke_api_schluessel(name: str, wert: str) -> None:
-    import keyring
-    from keyring.errors import KeyringError
-    from . import versand
+    from . import geheim
     try:
         if wert.strip():
-            keyring.set_password(versand.DIENST, f"api:{name}", wert.strip())
-        elif keyring.get_password(versand.DIENST, f"api:{name}"):
-            keyring.delete_password(versand.DIENST, f"api:{name}")
-    except KeyringError as fehler:
-        raise SucheFehler(f"Der Schlüsselbund ist nicht verfügbar: {fehler}") from fehler
+            geheim.setze(f"api:{name}", wert.strip())
+        else:
+            geheim.loesche(f"api:{name}")
+    except geheim.GeheimFehler as fehler:
+        raise SucheFehler(str(fehler)) from fehler
 
 
 def _ohne_tags(text: str) -> str:

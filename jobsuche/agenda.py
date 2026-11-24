@@ -75,7 +75,7 @@ def erstelle(conn: sqlite3.Connection, ziel: Path | None = None) -> Path:
         story.extend(absaetze[1:])
 
     # Eigener Ordner: Vorhandene Dateien an anderen Orten werden nie überschrieben.
-    ziel = ziel or config.DB_PFAD.parent / "agenda" / f"Agenda_{date.today().isoformat()}.pdf"
+    ziel = ziel or db.datenordner() / "agenda" / f"Agenda_{date.today().isoformat()}.pdf"
     ziel.parent.mkdir(parents=True, exist_ok=True)
     fuss = pdf.fusszeile(f"{name} · Agenda · {stand}")
     SimpleDocTemplate(

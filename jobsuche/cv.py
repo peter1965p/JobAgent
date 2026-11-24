@@ -190,7 +190,7 @@ def erstelle(conn: sqlite3.Connection, ziel: Path | None = None) -> Path:
         wert = _wert(conn, schluessel)
         abschnitt(titel, [Paragraph(escape(wert), stile["text"])] if wert else [])
 
-    ziel = ziel or config.DB_PFAD.parent / "cv" / f"Lebenslauf_{date.today().isoformat()}.pdf"
+    ziel = ziel or db.datenordner() / "cv" / f"Lebenslauf_{date.today().isoformat()}.pdf"
     ziel.parent.mkdir(parents=True, exist_ok=True)
     fuss = pdf.fusszeile(f"{p['name']} · Lebenslauf · {pdf.stand()}")
     SimpleDocTemplate(str(ziel), pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=18 * mm,

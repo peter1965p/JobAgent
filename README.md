@@ -34,6 +34,7 @@ Für die Entwicklung:
 ```bash
 source venv/bin/activate
 python -m pytest tests        # Ohne Modell, ohne Netz, ohne Eingriffe ins System
+pip install -r requirements-web.txt   # nur für die Web-Oberfläche und ihre Tests
 PYTHONPATH=. jupyter lab analyse.ipynb
 ```
 
@@ -44,6 +45,22 @@ Beim Start meldest du dich mit Mailadresse und Mailpasswort an, oder du schaust 
 Jede Adresse bekommt eine eigene Datenbank unter `daten/personen/`. Das trennt die Daten, schützt sie aber nicht: Die Dateien sind unverschlüsselt, wer direkt an sie kommt, kann sie lesen. Das Passwort steht nicht in der Datenbank, nur ein Prüfwert für die Anmeldung ohne Netz.
 
 Die Demo läuft mit erfundenen Daten in einem temporären Ordner, der beim Beenden verschwindet. Sie sendet nichts und liest deine Mailprogramme nicht. Die Suche funktioniert auch dort, der Nachtlauf nicht.
+
+## Konten, Mandanten und Web-Oberfläche
+
+Mit PostgreSQL (siehe unten) gibt es Konten und Mandanten: Jede Person meldet sich mit Mailadresse und eigenem Passwort an, in der Desktop-App wie im Browser. Ein Mandant ist ein abgeschotteter Datenbereich (eigenes Schema und eigene Datenbankrolle); ein Konto kann zu mehreren Mandanten gehören und wechselt unten links unter „Konto ▾“. Dort liegen auch Passwort ändern, KI-Wahl und Mailkonto. Ohne PostgreSQL bleibt die App beim alten Einzelbetrieb mit SQLite und Anmeldung über den Mailserver.
+
+```bash
+python -m jobsuche.betrieb einrichten      # zentrales Schema js_zentral und Rolle jobagent_web (Passwort im Schlüsselbund)
+python -m jobsuche.betrieb uebernehmen --email ADRESSE --name NAME   # bisherige Datenbank wird Mandant 1, Konto ist Admin
+python -m jobsuche.betrieb einladung --notiz "für …"                 # Einladungscode für ein neues Konto
+```
+
+Der Datenbank-Benutzer der Desktop-App braucht dafür einmalig `CREATEROLE` (`ALTER ROLE jobsuche CREATEROLE;` als Administrator).
+
+**Trennung:** Die App verbindet sich mit einem Anmelde-Benutzer und wechselt per `SET ROLE` in die Rolle des Mandanten. Diese Rolle besitzt nur ihr eigenes Schema; auf andere Schemata und auf die Konten hat sie keine Rechte, das prüft der Server. Die Mandantentabelle ist per Row-Level-Security auf die eigene Zeile beschränkt. Der Webdienst ist Mitglied jeder Mandantenrolle nur mit SET (ohne geerbte Rechte).
+
+**Web-Oberfläche** (`python -m jobsuche.web`, FastAPI): Start, Morgenbericht, Suche, Firmen, Entwürfe, Gesendet, Profil mit Unterlagen, Fakten, Mailkonto, System, Konto und für Admins die Verwaltung. Neue Konten nur per Einladungscode. Claude läuft im Web über die KI-Brücke des Betreibers und nur für Mandanten, die der Admin freigibt; alle anderen nutzen Ollama. Gesendet wird nur über das eigene SMTP-Konto des Mandanten, dessen Passwort AES-GCM-verschlüsselt in seinem Datenbereich liegt. Der Nachtlauf läuft je Mandant auf dem Server. Deployment: `deploy/deploy-web.sh` (systemd hinter nginx, Ausgangsfilter gegen Zugriffe ins Heimnetz, Cloudflare-Tunnel vorbereitet).
 
 ## Ablauf
 

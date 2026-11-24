@@ -49,7 +49,12 @@ def saubere_testdatenbank():
     from jobsuche import pg
 
     def aufraeumen():
+        from jobsuche import mandanten
         with pg.roh_verbinden(_PG) as roh:
+            # Mandantenrollen gelten im ganzen Cluster: nur die dieser Test-Datenbank entfernen, nie fremde.
+            if mandanten.ist_eingerichtet(roh):
+                for (mid,) in roh.execute("SELECT id FROM js_zentral.mandanten").fetchall():
+                    mandanten.mandant_entfernen(roh, mid)
             for (name,) in roh.execute("SELECT schema_name FROM information_schema.schemata "
                                        "WHERE schema_name LIKE 'js\\_%'").fetchall():
                 roh.execute(f'DROP SCHEMA "{name}" CASCADE')

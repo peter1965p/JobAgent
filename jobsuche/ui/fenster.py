@@ -25,7 +25,7 @@ try:  # Eingebauter Browser für die Wohnungs-Vorschau; fehlt er, bleibt die App
 except ImportError:  # pragma: no cover - hängt von der Qt-Installation ab
     QWebEngineView = None
 
-from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, sicherung, suche, versand, wohnung
+from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, sicherung, suche, uebersicht, versand, wohnung
 from . import start, theme
 from .anmelden import AnmeldeFenster
 from .laufband import Laufband
@@ -241,43 +241,16 @@ class StartSeite(Seite):
     def oeffne_ziel(self):
         self.f.zeige_seite(self.ziel_seite)
 
+    ZIELE = {"profil": "ProfilSeite", "cv": "CVSeite", "fakten": "FaktenSeite", "suche": "SucheSeite",
+             "firmen": "FirmenSeite", "bericht": "BerichtSeite", "entwuerfe": "EntwurfSeite"}
+
     def aktualisieren(self):
-        z = lambda sql: self.conn.execute(sql).fetchone()[0]
-        offen = z("SELECT count(*) FROM fakten WHERE status = 'vorgeschlagen'")
-        bestaetigt = z("SELECT count(*) FROM fakten WHERE status = 'bestaetigt'")
-        firmen_n = z("SELECT count(*) FROM firmen")
-        bewertet = z("SELECT count(*) FROM firmen WHERE ki_score IS NOT NULL")
-        entwuerfe = z("SELECT count(*) FROM entwuerfe WHERE status = 'entwurf'")
-        freigegeben = z("SELECT count(*) FROM entwuerfe WHERE status = 'freigegeben'")
-        s = lernen.statistik(self.conn)
-        werte = [("Fakten bestätigt", f"{bestaetigt} ({offen} offen)"), ("Firmen bewertet", f"{bewertet} von {firmen_n}"),
-                 ("Entwürfe offen", entwuerfe), ("Freigegeben", freigegeben), ("Gesendet", s["gesendet"]),
-                 ("Antworten", s["antworten"]), ("Absagen", s["absagen"])]
+        st = uebersicht.stand(self.conn)
         leere(self.stand_raster)
-        for r, (name, wert) in enumerate(werte):
+        for r, (name, wert) in enumerate(st["werte"]):
             self.stand_raster.addWidget(label(name, "gedimmt"), r, 0)
             self.stand_raster.addWidget(label(str(wert)), r, 1)
-        fragen = len(angaben.offen(self.conn))
-        unterlagen = z("SELECT count(*) FROM dokumente")
-        if not person.name(self.conn):
-            text, ziel = "Willkommen! Trage zuerst deinen Namen und deine Mailadresse ein.", ProfilSeite
-        elif not unterlagen and bestaetigt == 0:
-            text, ziel = ("Hast du einen Lebenslauf? Dann füge ihn unter „Unterlagen“ hinzu. "
-                          "Sonst erstellt der CV-Assistent mit dir einen."), CVSeite
-        elif bestaetigt == 0:
-            text, ziel = f"Noch kein Fakt gilt. Prüfe die {offen} offenen Fakten oder lasse dir welche vorschlagen.", FaktenSeite
-        elif fragen:
-            text, ziel = f"Die App hat noch {fragen} Fragen an dich. Das fehlt in deinen Unterlagen.", FaktenSeite
-        elif firmen_n == 0:
-            text, ziel = "Lass dir passende Firmen finden oder trage die erste selbst ein.", SucheSeite
-        elif bewertet == 0:
-            text, ziel = "Lade die Firmenseiten und lasse die Firmen bewerten.", FirmenSeite
-        elif (bericht := nacht.letzter_bericht(self.conn)) and bericht["datum"][:10] == db.jetzt()[:10] and bericht["firmen"]:
-            text, ziel = f"Der Morgenbericht ist da: {len(bericht['firmen'])} aussichtsreiche Firmen.", BerichtSeite
-        elif entwuerfe:
-            text, ziel = "Offene Entwürfe warten auf deine Prüfung.", EntwurfSeite
-        else:
-            text, ziel = "Wähle die passendste Firma und erstelle einen Entwurf.", FirmenSeite
+        text, ziel = st["schritt"], globals()[self.ZIELE[st["ziel"]]]
         self.schritt_text.setText(text)
         self.ziel_seite = ziel
 
@@ -1870,8 +1843,23 @@ class BerichtSeite(Seite):
         lage.addWidget(ergebnis, 1)
         self.firmen = {}
 
+    def _server_nachtlauf(self):
+        """Mit Mandant läuft der Nachtlauf auf dem Server (Web-Dienst), nicht als Timer dieses Rechners."""
+        m = db.aktiver_mandant()
+        if m is None:
+            return None
+        from .. import mandanten
+        with mandanten.zentral_verbinden() as roh:
+            return mandanten.nachtlauf(roh, m.id)
+
     def aktualisieren(self):
-        an = nacht.ist_eingeschaltet()
+        try:
+            server = self._server_nachtlauf()
+        except Exception:
+            server = None
+        an = server[0] if server else nacht.ist_eingeschaltet()
+        if server:
+            self.uhrzeit.setCurrentText(server[1])
         self.schalter.setText("Nachtlauf ausschalten" if an else "Nachtlauf einschalten")
         self.schalter.setEnabled(not config.DEMO)
         self.uhrzeit.setEnabled(not an)
@@ -1896,6 +1884,16 @@ class BerichtSeite(Seite):
         self.grund.setText(vorspann + zeile["begruendung"])
 
     def umschalten(self):
+        m = db.aktiver_mandant()
+        if m is not None:
+            from .. import mandanten
+            try:
+                with mandanten.zentral_verbinden() as roh:
+                    an = mandanten.nachtlauf(roh, m.id)[0]
+                    mandanten.setze_nachtlauf(roh, m.id, not an, self.uhrzeit.currentText())
+            except Exception as fehler:
+                return self.f.melde(f"Der Nachtlauf ließ sich nicht umschalten: {fehler}")
+            return self.f.neu_laden()
         try:
             if nacht.ist_eingeschaltet():
                 nacht.ausschalten()
@@ -3165,6 +3163,73 @@ class WohnungSeite(Seite):
         self.f.starte("Wohnungen lesen", lambda conn, fort: wohnung.lies(conn, melde=fort), nach=fertig)
 
 
+class KontoDialog(QDialog):
+    """Konto-Einstellungen: Passwort ändern, KI wählen, Mailkonto. Gleiches gibt es im Web unter „Konto“."""
+
+    def __init__(self, f: "Hauptfenster"):
+        super().__init__(f)
+        self.f = f
+        self.setWindowTitle("Konto")
+        self.setMinimumWidth(460)
+        lage = QVBoxLayout(self)
+        k = f.konto
+        lage.addWidget(label(f"{k.konto.email} · Mandant: {k.mandant.name}" + (" · Administrator" if k.konto.admin else ""), "gedimmt", True))
+        lage.addWidget(label("Passwort ändern", "karteTitel"))
+        self.alt, self.neu, self.neu2 = QLineEdit(), QLineEdit(), QLineEdit()
+        for feld, text in ((self.alt, "Bisheriges Passwort"), (self.neu, f"Neues Passwort (mind. 12 Zeichen)"),
+                           (self.neu2, "Neues Passwort wiederholen")):
+            feld.setEchoMode(QLineEdit.Password)
+            feld.setPlaceholderText(text)
+            lage.addWidget(feld)
+        lage.addWidget(knopf("Passwort ändern", self.passwort_aendern, True))
+        lage.addWidget(label("KI", "karteTitel"))
+        self.modell = QComboBox()
+        try:
+            modelle = llm.modelle()
+        except llm.LLMFehler as fehler:
+            modelle = []
+            lage.addWidget(label(str(fehler), "hinweis", True))
+        if not llm.claude_status():
+            modelle += llm.CLAUDE_MODELLE
+        aktuell = f.modell()
+        for m in dict.fromkeys([aktuell, *modelle]):
+            self.modell.addItem(m[len(llm.CLAUDE_PREFIX):] + " (Claude)" if llm.ist_claude(m) else m + " (lokal)", m)
+        reihe = QHBoxLayout()
+        reihe.addWidget(self.modell, 1)
+        reihe.addWidget(knopf("Übernehmen", self.ki_waehlen))
+        lage.addLayout(reihe)
+        lage.addWidget(label("Mailkonto", "karteTitel"))
+        konto = versand.lade_konto(f.conn)
+        lage.addWidget(label(f"{konto.email} über {konto.host}" if konto else "Noch kein Mailkonto für den Versand.", "gedimmt", True))
+        lage.addWidget(knopf("Mailkonto einrichten", self.mailkonto))
+        self.meldung = label("", "okText", True)
+        lage.addWidget(self.meldung)
+        knoepfe = QDialogButtonBox(QDialogButtonBox.Close)
+        knoepfe.rejected.connect(self.reject)
+        lage.addWidget(knoepfe)
+
+    def passwort_aendern(self):
+        if self.neu.text() != self.neu2.text():
+            return self.f.melde("Die neuen Passwörter sind verschieden.")
+        try:
+            anmeldung.aendere_konto_passwort(self.f.konto, self.alt.text(), self.neu.text())
+        except ValueError as fehler:
+            return self.f.melde(str(fehler))
+        if anmeldung.gemerktes_passwort(self.f.konto.konto.email, True):
+            anmeldung.merke_passwort(self.f.konto.konto.email, self.neu.text(), True, True)
+        for feld in (self.alt, self.neu, self.neu2):
+            feld.clear()
+        self.meldung.setText("Passwort geändert.")
+
+    def ki_waehlen(self):
+        db.setze_einstellung(self.f.conn, "modell", self.modell.currentData())
+        self.meldung.setText("KI gewählt.")
+
+    def mailkonto(self):
+        self.accept()
+        self.f.zeige_seite(MailkontoSeite)
+
+
 class Hauptfenster(QMainWindow):
     NAVIGATION = [
         ("ARBEIT", [StartSeite, BerichtSeite, SucheSeite, FirmenSeite, EntwurfSeite, GesendetSeite]),
@@ -3174,8 +3239,11 @@ class Hauptfenster(QMainWindow):
         ("ARCHIV", [ProtokollSeite]),
     ]
 
-    def __init__(self, einrichten=True, sitzung_konto=None, sitzung_passwort=None, beim_schliessen=None, beim_abmelden=None):
+    def __init__(self, einrichten=True, sitzung_konto=None, sitzung_passwort=None, beim_schliessen=None, beim_abmelden=None,
+                 konto=None):
         super().__init__()
+        self.konto = konto  # anmeldung.KontoErgebnis bei Konto-Anmeldung (Mandanten-Datenbank), sonst None
+        self.wechsel_ziel = None
         self.sitzung_konto = sitzung_konto
         self.sitzung_passwort = sitzung_passwort
         self.beim_schliessen = beim_schliessen
@@ -3260,7 +3328,14 @@ class Hauptfenster(QMainWindow):
         self.abmelden_knopf = QPushButton("Demo beenden" if config.DEMO else "Abmelden")
         self.abmelden_knopf.clicked.connect(self.abmelden)
         seitenlage.addSpacing(6)
-        seitenlage.addWidget(self.abmelden_knopf)
+        unten = QHBoxLayout()
+        unten.addWidget(self.abmelden_knopf, 1)
+        self.konto_knopf = QPushButton("Konto ▾")
+        self.konto_knopf.setToolTip("Konto, Mandant, KI und Mailkonto")
+        self.konto_knopf.clicked.connect(self.konto_menue)
+        self.konto_knopf.setVisible(self.konto is not None)
+        unten.addWidget(self.konto_knopf, 1)
+        seitenlage.addLayout(unten)
         lage.addWidget(leiste)
 
         rechts = QVBoxLayout()
@@ -3347,7 +3422,9 @@ class Hauptfenster(QMainWindow):
         self.stapel.currentWidget().aktualisieren()
         name = person.name(self.conn)
         self.avatar.setText(person.initialen(name))
-        self.fuss_text.setText(f"{name or 'Noch kein Profil'}\nJob Agent {__version__}\nKI: {self.modell()} · lokal")
+        mandant = f"\n{self.konto.mandant.name}" + (" ▾" if len(self.konto.mandanten) > 1 else "") if self.konto else ""
+        ki_text = f"{self.modell()[len(llm.CLAUDE_PREFIX):]} · Claude" if llm.ist_claude(self.modell()) else f"{self.modell()} · lokal"
+        self.fuss_text.setText(f"{name or 'Noch kein Profil'}{mandant}\nJob Agent {__version__}\nKI: {ki_text}")
         if not self.warteschlange:
             self._zeige_stand()
 
@@ -3448,6 +3525,36 @@ class Hauptfenster(QMainWindow):
 
         self.starte(titel, lambda conn, fort: arbeit(conn, fort, passwort), nach=fertig)
 
+    def konto_menue(self):
+        """Konto-Bereich unten links: Einstellungen, Mandant wechseln, Mailkonto, Abmelden."""
+        menue = QMenu(self)
+        menue.addAction(f"Angemeldet: {self.konto.konto.email}").setEnabled(False)
+        menue.addAction("Konto-Einstellungen …", self.konto_einstellungen)
+        menue.addAction("Mailkonto", lambda: self.zeige_seite(MailkontoSeite))
+        if len(self.konto.mandanten) > 1:
+            wechsel = menue.addMenu("Mandant wechseln")
+            for m in self.konto.mandanten:
+                aktion = wechsel.addAction(("● " if m.id == self.konto.mandant.id else "○ ") + m.name,
+                                           lambda mid=m.id: self.wechsle_mandant(mid))
+                aktion.setEnabled(m.id != self.konto.mandant.id)
+        menue.addSeparator()
+        menue.addAction("Abmelden", self.abmelden)
+        menue.exec(self.konto_knopf.mapToGlobal(self.konto_knopf.rect().topLeft()))
+
+    def wechsle_mandant(self, mandant_id: int):
+        if self.warteschlange:
+            return self.melde("Es läuft noch eine Arbeit. Warte kurz, bis sie fertig ist.")
+        try:
+            self.wechsel_ziel = anmeldung.wechsle_mandant(self.konto, mandant_id)
+        except Exception as fehler:  # Server weg oder kein Zugriff
+            return self.melde(f"Wechsel nicht möglich: {fehler}")
+        self.abmelden_gewuenscht = True
+        self.close()
+
+    def konto_einstellungen(self):
+        KontoDialog(self).exec()
+        self.neu_laden()
+
     def abmelden(self):
         if self.warteschlange:
             return self.melde("Es läuft noch eine Arbeit. Warte kurz, bis sie fertig ist.")
@@ -3523,6 +3630,10 @@ class Sitzung:
         if anmelden.demo:
             demo.vorbereiten()
             self.fenster = Hauptfenster(beim_schliessen=self.beenden, beim_abmelden=self.abgemeldet)
+        elif anmelden.kontomodus:
+            self.oeffne_konto(anmelden.ergebnis)
+            if anmelden.warnung:
+                self.fenster.melde(anmelden.warnung)
         else:
             anmeldung.oeffne(anmelden.ergebnis, anmelden.email.text(), anmelden.passwort, anmelden.name.text())
             self.fenster = Hauptfenster(sitzung_konto=anmelden.ergebnis.konto, sitzung_passwort=anmelden.passwort,
@@ -3534,10 +3645,21 @@ class Sitzung:
         self.fenster.show()
         self.fenster.biete_claude_an()
 
+    def oeffne_konto(self, ergebnis):
+        """Konto-Anmeldung (Mandanten-Datenbank): Fenster für den gewählten Mandanten."""
+        anmeldung.oeffne_mandant(ergebnis)
+        self.fenster = Hauptfenster(beim_schliessen=self.beenden, beim_abmelden=self.abgemeldet, konto=ergebnis)
+        self.fenster.show()
+
     def abgemeldet(self):
         self.fenster.conn.close()
+        wechsel = getattr(self.fenster, "wechsel_ziel", None)
         demo.aufraeumen()
         config.DEMO = False
+        if wechsel is not None:
+            QTimer.singleShot(0, lambda: self.oeffne_konto(wechsel))
+            return
+        anmeldung.schliesse_mandant()
         QTimer.singleShot(0, self.starten)
 
     def beenden(self):

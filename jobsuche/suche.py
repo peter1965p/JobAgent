@@ -3,6 +3,8 @@
 Die Quellen liefern Firmen. Inhaber und Mailadresse findet `hole_inhaber` auf den Firmenseiten selbst.
 """
 
+from __future__ import annotations
+
 import base64
 import hashlib
 import html

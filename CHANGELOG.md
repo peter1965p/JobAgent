@@ -2,6 +2,22 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.15.0 – 2026-11-24
+
+### Neu
+- **Mandanten und Konten (PostgreSQL):** Zentrale Tabellen im Schema `js_zentral` (Konten, Mandanten, Mitgliedschaften, Einladungen, Sitzungen, Protokoll). Jeder Mandant hat ein eigenes Schema und eine eigene Datenbankrolle; die App wechselt per `SET ROLE` hinein. Fremde Schemata und die zentralen Konten verweigert der Server selbst. Die Mandantentabelle ist zusätzlich per Row-Level-Security auf die eigene Zeile beschränkt. Neue Mandanten legt die Funktion `js_zentral.mandant_anlegen` an (SECURITY DEFINER), der Webdienst braucht dafür kein CREATEROLE.
+- **Anmeldung mit eigenem Konto** (Mailadresse + Passwort, argon2id, Sperre nach 5 Fehlversuchen für 15 Minuten), in Desktop und Web gleich. Das Mailpasswort dient nur noch dem Versand. Ohne PostgreSQL bleibt die Desktop-App wie bisher (SQLite, Anmeldung per Mailserver).
+- **Konto-Bereich unten links:** Konto, Mandant (Wechsel, wenn mehrere), Konto-Einstellungen (Passwort ändern, KI-Wahl, Mailkonto), Abmelden.
+- **Web-Oberfläche** (`python -m jobsuche.web`, FastAPI): Start, Morgenbericht, Suche mit Seiten und Sortierung über alle Treffer, Firmen, Entwürfe, Gesendet, Profil mit Unterlagen-Upload, Fakten und Fragen, Mailkonto, System mit Datenexport, Konto, Verwaltung (Einladungen, Claude-Freigabe je Mandant, Konten). Lange Arbeiten laufen als Hintergrundaufträge.
+- **Schutz für den öffentlichen Betrieb:** Registrierung nur per Einladungscode, Rate-Limits (Anmeldung, Registrierung, aufwendige Aufträge, allgemein), Sitzungs-Cookie `__Host-` mit Secure/HttpOnly/SameSite=Strict, CSRF-Token, CSP/HSTS und weitere Kopfzeilen, Host-Prüfung, keine Stacktraces nach außen, Proxy-Kopfzeilen nur von 127.0.0.1.
+- **KI im Web:** Ollama für alle; Claude über die KI-Brücke nur für Mandanten, die der Admin freigibt (sonst läuft still das lokale Modell). Passwörter (Mailkonto, Postfächer, Schlüssel für Adzuna/Jooble) liegen im Web AES-GCM-verschlüsselt beim Mandanten.
+- **Nachtlauf je Mandant auf dem Server**, ein- und ausschaltbar unter „Morgenbericht“ (Desktop und Web).
+- Deployment: `deploy/deploy-web.sh` (CT 106, nginx, systemd, Ausgangsfilter gegen Zugriffe ins Heimnetz, vorbereiteter Cloudflare-Tunnel). `python -m jobsuche.betrieb` richtet die Mandanten-Datenbank ein und übernimmt die bisherige Datenbank verlustfrei als ersten Mandanten.
+
+### Geändert
+- Startseite: Stand und nächster Schritt kommen aus dem gemeinsamen Kern (`uebersicht.py`).
+- Passwörter laufen über eine gemeinsame Ablage (`geheim.py`): Desktop weiter im Schlüsselbund, Web verschlüsselt in der Datenbank.
+
 ## 0.14.0 – 2026-11-23
 
 ### Neu

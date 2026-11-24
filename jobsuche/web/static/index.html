@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Job Agent</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+</head>
+<body>
+<div id="anmeldung" class="anmeldung" hidden>
+  <form id="anmeldeformular" class="karte anmeldekarte" autocomplete="on">
+    <div class="logo"><span class="raute">◆</span> Job Agent</div>
+    <p class="gedimmt" id="anmeldetext">Melde dich mit deinem Konto an. Neue Konten gibt es nur mit Einladung.</p>
+    <input id="a_email" type="email" placeholder="Mailadresse" autocomplete="username" required maxlength="254">
+    <input id="a_name" type="text" placeholder="Dein Name" autocomplete="name" maxlength="120" hidden>
+    <input id="a_passwort" type="password" placeholder="Passwort" autocomplete="current-password" required maxlength="256">
+    <input id="a_code" type="text" placeholder="Einladungscode" autocomplete="off" maxlength="100" hidden>
+    <div id="a_meldung" class="fehler" hidden></div>
+    <div class="reihe">
+      <button type="submit" class="primaer" id="a_los">Anmelden</button>
+      <button type="button" id="a_wechsel">Mit Einladung registrieren</button>
+    </div>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <nav class="seitenleiste" id="seitenleiste">
+    <div class="logo"><span class="raute">◆</span> Job Agent</div>
+    <div class="unter">Firmen · Fakten · KI</div>
+    <div id="navigation"></div>
+    <div class="fuss">
+      <button type="button" id="profilknopf" class="profilknopf" title="Konto und Mandant">
+        <span class="avatar" id="avatar">?</span>
+        <span class="fusstext" id="fusstext"></span>
+      </button>
+      <div id="kontomenue" class="kontomenue" hidden></div>
+    </div>
+  </nav>
+  <main class="inhalt">
+    <header class="kopf">
+      <button type="button" id="menuknopf" class="menuknopf" aria-label="Menü">☰</button>
+      <div class="ring" id="ring"></div>
+      <div class="titelblock"><h1 id="titel"></h1><div class="gedimmt" id="untertitel"></div></div>
+      <div class="pill" id="pill"></div>
+    </header>
+    <section id="seite"></section>
+  </main>
+</div>
+<div id="dialog" class="dialoghintergrund" hidden><div class="karte dialog" id="dialoginhalt"></div></div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

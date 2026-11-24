@@ -26,7 +26,7 @@ import keyring
 from bs4 import BeautifulSoup, Comment, NavigableString
 from keyring.errors import KeyringError
 
-from . import db, mailkonten, versand
+from . import db, geheim, mailkonten, versand
 from .quellen import SucheFehler
 
 TAGE = 14  # Ältere Alerts sind meist schon vergeben oder ausgelaufen.
@@ -274,10 +274,7 @@ def _schluessel(p: Postfach) -> str:
 
 def passwort(conn: sqlite3.Connection, p: Postfach) -> str:
     """Eigenes Passwort im Schlüsselbund, sonst das des Versandkontos, wenn es derselbe Benutzer ist."""
-    try:
-        eigenes = keyring.get_password(versand.DIENST, _schluessel(p))
-    except KeyringError:
-        eigenes = None
+    eigenes = geheim.hole(_schluessel(p))
     if eigenes:
         return eigenes
     konto = versand.lade_konto(conn)
@@ -288,9 +285,9 @@ def passwort(conn: sqlite3.Connection, p: Postfach) -> str:
 
 def merke_passwort(p: Postfach, wert: str) -> None:
     try:
-        keyring.set_password(versand.DIENST, _schluessel(p), wert)
-    except KeyringError as fehler:
-        raise SucheFehler(f"Der Schlüsselbund ist nicht verfügbar: {fehler}") from fehler
+        geheim.setze(_schluessel(p), wert)
+    except geheim.GeheimFehler as fehler:
+        raise SucheFehler(str(fehler)) from fehler
 
 
 def _seit(tage: int) -> str:

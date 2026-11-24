@@ -1,6 +1,7 @@
 """Versand per SMTP. Sendet nur freigegebene Mails und nur mit Verschlüsselung.
 
-Das Passwort steht nie in der Datenbank oder im Protokoll, gespeichert wird es nur im Schlüsselbund des Systems.
+Das Passwort steht nie im Klartext in der Datenbank oder im Protokoll: Desktop im Schlüsselbund des Systems, Web
+verschlüsselt (AES-GCM) beim Mandanten, siehe geheim.py.
 """
 
 import mimetypes
@@ -15,7 +16,7 @@ from pathlib import Path
 import keyring
 from keyring.errors import KeyringError
 
-from . import config, db, ki, mailkonten, profil, regeln
+from . import config, db, geheim, ki, mailkonten, profil, regeln
 
 DIENST = "jobsuche"
 MAX_ANHANG_BYTES = 20 * 1024 * 1024
@@ -63,24 +64,18 @@ def _schluessel(konto: mailkonten.Konto) -> str:
 
 
 def gespeichertes_passwort(konto: mailkonten.Konto) -> str | None:
-    try:
-        return keyring.get_password(DIENST, _schluessel(konto))
-    except KeyringError:
-        return None
+    return geheim.hole(_schluessel(konto))
 
 
 def speichere_passwort(konto: mailkonten.Konto, passwort: str) -> None:
     try:
-        keyring.set_password(DIENST, _schluessel(konto), passwort)
-    except KeyringError as fehler:
-        raise VersandFehler(f"Der Schlüsselbund ist nicht verfügbar: {fehler}") from fehler
+        geheim.setze(_schluessel(konto), passwort)
+    except geheim.GeheimFehler as fehler:
+        raise VersandFehler(str(fehler)) from fehler
 
 
 def loesche_passwort(konto: mailkonten.Konto) -> None:
-    try:
-        keyring.delete_password(DIENST, _schluessel(konto))
-    except KeyringError:
-        pass
+    geheim.loesche(_schluessel(konto))
 
 
 def anhang_problem(pfade: list[Path]) -> str | None:
