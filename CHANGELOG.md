@@ -2,6 +2,20 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.15.1 – 2026-11-24
+
+### Neu
+- **MCP-Server** (`python -m jobsuche.mcp_server`, SDK `mcp` 2.x, stdio): Stand, Fakten, Firmen, Entwürfe lesen, Stellen suchen und Entwürfe vorschlagen für KI-Assistenten wie Claude Code. Senden und Freigeben gibt es dort bewusst nicht.
+- **KI-Anbieter Cloudflare Workers AI** (`cf:`, Llama 3.3 70B und 3.1 8B) über einen eigenen Worker mit Token; fällt er aus, übernimmt das lokale Modell.
+- **Suche:** Zeitmessung je Schritt (Quellen, Fahrstrecken, KI-Check, Nähe), angezeigt unter den Treffern.
+- **Web:** Avatar im Konto-Menü (PNG, JPEG, WebP bis 512 KB, Typ an den Bytes geprüft); Name unten links nur einmal.
+
+### Geändert
+- Adzuna und Jooble entfernt (Desktop, Web, Suche). Eine gespeicherte Auswahl mit diesen Quellen wird übergangen.
+- Logo ohne Raute.
+- Web: gesperrte Knöpfe wie „Jetzt senden“ vor der Freigabe sind sichtbar ausgegraut.
+- Der Webdienst darf ein lokales SearXNG (127.0.0.1:18888) erreichen.
+
 ## 0.15.0 – 2026-11-24
 
 ### Neu
