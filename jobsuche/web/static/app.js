@@ -357,7 +357,7 @@ SEITEN.suche = async (ziel) => {
   const liste = el("div");
   const details = el("div", { class: "spalte" }, el("p", { class: "gedimmt" }, "Klicke auf einen Treffer."));
   const nachSuche = async (e) => {
-    hinweise.textContent = (e.hinweise || []).join("\n");
+    hinweise.textContent = [...(e.hinweise || []), e.zeiten_text || ""].filter(Boolean).join("\n");
     if (e.begriffe) f.begriffe.value = e.begriffe.join(", ");
     S.seite = 0; S.sort = ""; S.gewaehlt = null;
     toast(`${e.anzahl} Treffer`, e.anzahl ? "erfolg" : "");

@@ -1614,6 +1614,8 @@ class SucheSeite(Seite):
     def gefunden(self, ergebnis):
         self.treffer = dict(enumerate(ergebnis["treffer"]))
         self.ausfaelle.setText("\n".join(ergebnis.get("hinweise", [])))
+        if ergebnis.get("zeiten_text"):
+            self.f.melde(ergebnis["zeiten_text"])
         self.seite_nr, self.sortierung = 0, None
         self.tab.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self._zeige()

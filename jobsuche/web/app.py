@@ -593,7 +593,8 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
                 ergebnis = suche.suche_ueberall(conn, auftrag, melde)
             treffer[schluessel] = list(ergebnis["treffer"])
             return {"anzahl": len(ergebnis["treffer"]), "hinweise": ergebnis.get("hinweise", []),
-                    "begriffe": ergebnis.get("begriffe"), "ort": ergebnis.get("ort")}
+                    "begriffe": ergebnis.get("begriffe"), "ort": ergebnis.get("ort"),
+                    "zeiten_text": ergebnis.get("zeiten_text", "")}
         return starte(k, "Firmen suchen", arbeit)
 
     @app.get("/api/suche/treffer")

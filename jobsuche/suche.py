@@ -9,6 +9,7 @@ import base64
 import hashlib
 import html
 import json
+import time
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -485,13 +486,18 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
     begriffe = [b.strip() for b in auftrag.begriffe.split(",") if b.strip()]
     branche = auftrag.branche or db.einstellung(conn, "suche.abgeleitet_branche", "") or "alle"
     listen, hinweise = [], []
+    zeiten: dict[str, float] = {}  # Schritt → Sekunden, damit man sieht, wo die Minuten bleiben
+    start = time.monotonic()
 
     def quelle(name, arbeit):
         melde(f"Suche: {name}")
+        t0 = time.monotonic()
         try:
             listen.append(arbeit())
         except SucheFehler as fehler:
             hinweise.append(f"{name}: {fehler}")
+        finally:
+            zeiten[name] = zeiten.get(name, 0) + time.monotonic() - t0
 
     if "verzeichnis" in auftrag.quellen:
         def verzeichnis():
@@ -578,22 +584,41 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
         treffer = [t for t in treffer if not ki.ausschluss_in(" ".join(str(v) for v in t.values() if isinstance(v, str)), woerter)]
         if len(treffer) < vorher:
             hinweise.append(f"Ausgeschlossen: {vorher - len(treffer)} Treffer mit {', '.join(woerter)}.")
+    t0 = time.monotonic()
     treffer = mit_fahrstrecke(conn, treffer, auftrag, hinweise, melde, client)
+    zeiten["Fahrstrecken"] = time.monotonic() - t0
     if auftrag.remote == "nur":
         vorher = len(treffer)
         treffer = [t for t in treffer if t.get("remote")]
         hinweise.append(f"Remote: {len(treffer)} von {vorher} Stellen bieten Remote oder Homeoffice.")
     if auftrag.nur_ki:
         vorher = len(treffer)
+        t0 = time.monotonic()
         treffer = [t for t in mit_ki_signalen(conn, treffer, melde, client) if t.get("ki")]
+        zeiten["KI-Check"] = time.monotonic() - t0
         hinweise.append(f"KI erwünscht: {len(treffer)} von {vorher} Anzeigen nennen KI-Werkzeuge oder KI-Arbeit.")
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
+    t0 = time.monotonic()
     treffer = bewerte_naehe(conn, treffer)
+    zeiten["Nähe"] = time.monotonic() - t0
+    gesamt = time.monotonic() - start
     grenze = max_treffer(conn)
     if len(treffer) > grenze:
         hinweise.append(f"Treffer: {len(treffer)} gefunden, die besten {grenze} stehen in der Liste (Grenze unter „Maximale Treffer“).")
         treffer = treffer[:grenze]
-    return {"treffer": treffer, "hinweise": hinweise, "branche": branche}
+    return {"treffer": treffer, "hinweise": hinweise, "branche": branche,
+            "zeiten": {k: round(v, 1) for k, v in zeiten.items()}, "zeiten_text": zeiten_text(zeiten, gesamt)}
+
+
+def _dauer(sekunden: float) -> str:
+    sekunden = round(sekunden)
+    return f"{sekunden // 60}:{sekunden % 60:02d} min" if sekunden >= 60 else f"{sekunden} s"
+
+
+def zeiten_text(zeiten: dict[str, float], gesamt: float) -> str:
+    """„Zeiten: Jobbörse 1:12 min · KI-Check 48 s · … · gesamt 2:30 min“, die langsamsten Schritte zuerst."""
+    teile = [f"{name} {_dauer(dauer)}" for name, dauer in sorted(zeiten.items(), key=lambda x: -x[1]) if dauer >= 0.5]
+    return "Zeiten: " + " · ".join([*teile, f"gesamt {_dauer(gesamt)}"])
 
 
 def max_treffer(conn: sqlite3.Connection) -> int:

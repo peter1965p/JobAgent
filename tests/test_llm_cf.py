@@ -54,3 +54,9 @@ def test_cf_fehler_faellt_auf_lokal_zurueck(zugang, monkeypatch):
 def test_name_kurz():
     assert llm.name_kurz("cf:@cf/meta/llama-3.1-8b-instruct-fast") == "llama-3.1-8b-instruct-fast · Cloudflare"
     assert llm.name_kurz("qwen2.5:3b") == "qwen2.5:3b · lokal"
+
+
+def test_zeiten_text_sortiert_und_formatiert():
+    from jobsuche import suche
+    text = suche.zeiten_text({"Jobbörse": 72.4, "Nähe": 0.2, "KI-Check": 48.0}, 125)
+    assert text == "Zeiten: Jobbörse 1:12 min · KI-Check 48 s · gesamt 2:05 min"
