@@ -600,6 +600,8 @@ def suche_ueberall(conn: sqlite3.Connection, auftrag: Auftrag, melde=lambda _: N
     # Konzerne bleiben in der Liste, der Mittelstand steht aber vorn.
     t0 = time.monotonic()
     treffer = bewerte_naehe(conn, treffer)
+    from . import gehalt
+    treffer = [gehalt.ergaenze(t) for t in treffer]  # „48.000 €/Jahr“ aus Alert-Zeilen, Titel oder Beschreibung
     zeiten["Nähe"] = time.monotonic() - t0
     gesamt = time.monotonic() - start
     grenze = max_treffer(conn)

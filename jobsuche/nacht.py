@@ -43,6 +43,34 @@ def _merke(conn: sqlite3.Connection, firma: str) -> None:
 
 
 def _suche(conn, modell, melde, chat, client, warte) -> dict:
+    """Mit „nachts mitlaufen“ markierte gespeicherte Suchen nacheinander, sonst die Angaben der Suchseite. Jede Suche
+    merkt sich ihr Ergebnis (mit NEU gegenüber der vorigen Nacht); die Treffer werden zusammengeführt."""
+    from . import suchen
+    geplant = suchen.nachts(conn)
+    if not geplant:
+        return suchen.merke(conn, _eine_suche(conn, modell, melde, chat, client, warte))
+    vorher, aktiv = suchen.aktuelle_angaben(conn), db.einstellung(conn, "suchen.aktiv", "")
+    gesamt = {"treffer": [], "hinweise": [], "suchen": []}
+    gesehen: set[str] = set()
+    try:
+        for s in geplant:
+            melde(f"Gespeicherte Suche: {s['name']}")
+            suchen.laden(conn, s["id"])
+            ergebnis = suchen.ergebnis_merken(conn, s["id"], _eine_suche(conn, modell, melde, chat, client, warte))
+            gesamt["suchen"].append({"name": s["name"], "gefunden": len(ergebnis["treffer"]), "neu": ergebnis.get("neu")})
+            gesamt["hinweise"] += [f"{s['name']}: {h}" for h in ergebnis.get("hinweise", [])]
+            for t in ergebnis["treffer"]:
+                schluessel = regeln.kurzname(t["firma"]).lower()
+                if schluessel not in gesehen:
+                    gesehen.add(schluessel)
+                    gesamt["treffer"].append({**t, "suche": s["name"]})
+    finally:  # die Suchseite zeigt morgens wieder, was dort eingestellt war
+        suchen.angaben_setzen(conn, vorher)
+        db.setze_einstellung(conn, "suchen.aktiv", aktiv)
+    return gesamt
+
+
+def _eine_suche(conn, modell, melde, chat, client, warte) -> dict:
     auftrag = suche.gespeicherter_auftrag(conn)
     ergebnis = {}
     for versuch in range(VERSUCHE):
@@ -64,6 +92,10 @@ def lauf(conn: sqlite3.Connection, modell: str, melde=lambda _: None, chat=llm.c
     try:
         ergebnis = _suche(conn, modell, melde, chat, client, warte)
         bericht["hinweise"] = ergebnis["hinweise"]
+        if ergebnis.get("suchen"):
+            bericht["suchen"] = ergebnis["suchen"]
+            bericht["hinweise"] = ["Gespeicherte Suchen: " + ", ".join(
+                f"{x['name']} {x['gefunden']}" + (f" ({x['neu']} neu)" if x.get("neu") else "") for x in ergebnis["suchen"])] + bericht["hinweise"]
         bericht["gefunden"] = len(ergebnis["treffer"])
         gesehen = _gesehen(conn)
         neu = [t for t in ergebnis["treffer"] if not t["bekannt"] and regeln.kurzname(t["firma"]).lower() not in gesehen]
@@ -138,6 +170,7 @@ def lauf(conn: sqlite3.Connection, modell: str, melde=lambda _: None, chat=llm.c
                 "firma_id": firma_id, "name": kontakt["name"], "score": score, "personen": kontakt["personen"],
                 "email": kontakt["email"], "art": kontakt["art"], "website": kontakt["website"], "quelle": treffer["quelle"],
                 "begruendung": begruendung, "entwurf_id": entwurf_id, "stellen": stellen, "direkt": ist_direkt(treffer),
+                "suche": treffer.get("suche", ""), "gehalt": treffer.get("gehalt", ""),
                 "eignung": eignung["score"] if eignung else None,
             })
     except Exception as fehler:  # Morgens soll im Bericht stehen, was schiefging, statt nur im Systemlog.

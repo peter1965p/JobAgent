@@ -789,3 +789,47 @@ def test_laufband_zeigt_hinweise_nacheinander_in_einer_zeile(app):
     assert band.zaehler.text() == "2/3"
     band.clear()
     assert band.isHidden() and band.text() == ""
+
+
+def test_suche_speichern_laden_ergebnis_gehalt_und_neu(app, f, monkeypatch):
+    from jobsuche import suche, suchen
+    runde = {"n": 0}
+
+    def treffer(was, wo, km, client=None, arbeitszeit="", max_tage=0):
+        runde["n"] += 1
+        stellen = [{"referenz": "R1", "firma": "Muster GmbH", "titel": "Admin (m/w/d)", "beruf": "", "ort": "Bremen", "entfernung": 9,
+                    "url": "https://example.org/R1", "beschreibung": "Gehalt 4.000 € brutto im Monat"}]
+        if runde["n"] > 1:
+            stellen.append({"referenz": "R2", "firma": "Beispiel AG", "titel": "Linux-Admin", "beruf": "", "ort": "Bremen",
+                            "entfernung": 5, "url": "https://example.org/R2"})
+        return stellen
+    monkeypatch.setattr(suche, "suche", treffer)
+    monkeypatch.setattr(fenster.QInputDialog, "getText", staticmethod(lambda *a, **k: ("Admin Bremen", True)))
+    f.zeige_seite(fenster.SucheSeite)
+    s = f.stapel.currentWidget()
+    s.was.setText("Admin")
+    s.wo.setText("Bremen")
+    s.q_verzeichnis.setChecked(False)
+    s.q_arbeitnow.setChecked(False)
+    s.suchen()
+    warte(app, f)
+    assert s.tab.item(0, fenster.SPALTE_GEHALT).text() == "4.000 €/Monat"
+    s.suche_speichern()
+    gespeichert = suchen.liste(f.conn)
+    assert [x["name"] for x in gespeichert] == ["Admin Bremen"] and gespeichert[0]["anzahl"] == 1
+    assert s.gespeichert.currentData() == gespeichert[0]["id"] and s.k_loeschen.isEnabled()
+    s.nachts.setChecked(True)
+    assert suchen.hole(f.conn, gespeichert[0]["id"])["nachts"]
+    s.suchen()                                                   # zweiter Lauf: Beispiel AG ist neu
+    warte(app, f)
+    zeilen = {s.tab.item(r, 1).text(): s.tab.item(r, 6).text() for r in range(s.tab.rowCount())}
+    assert zeilen == {"Muster GmbH": "", "Beispiel AG": "NEU"}
+    assert "1 Treffer" not in s.gespeichert.currentText() and "1 neu" in s.gespeichert.currentText()
+    # Andere Angaben, dann die gespeicherte Suche wieder laden: Angaben und Ergebnis kommen zurück
+    s.gespeichert.setCurrentIndex(0); s._gespeicherte_gewaehlt()
+    s.was.setText("Koch")
+    s.gespeichert.setCurrentIndex(s.gespeichert.findData(gespeichert[0]["id"])); s._gespeicherte_gewaehlt()
+    assert s.was.text() == "Admin" and s.tab.rowCount() == 2
+    # Neustart der Seite: das Ergebnis ist noch da
+    s.treffer = {}; s.vorbelegt = False; s.aktualisieren()
+    assert s.tab.rowCount() == 2

@@ -25,6 +25,7 @@ try:  # Eingebauter Browser für die Wohnungs-Vorschau; fehlt er, bleibt die App
 except ImportError:  # pragma: no cover - hängt von der Qt-Installation ab
     QWebEngineView = None
 
+from .. import suchen as gespeicherte
 from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, sicherung, suche, uebersicht, versand, wohnung
 from . import start, theme
 from .anmelden import AnmeldeFenster
@@ -646,6 +647,7 @@ FORTSCHRITT = re.compile(r"(\d+)\s+von\s+(\d+)")
 
 SPALTE_ORT = 3
 SPALTE_ALTER = 8
+SPALTE_GEHALT = 9
 
 
 _AMPEL_ICONS: dict[str, QIcon] = {}
@@ -1212,6 +1214,25 @@ class SucheSeite(Seite):
         lage.setContentsMargins(0, 0, 0, 0)
         lage.setSpacing(18)
         karte = Karte("Wo und was")
+        reihe_gespeichert = QHBoxLayout()
+        reihe_gespeichert.addWidget(label("Gespeicherte Suche:", "gedimmt"))
+        self.gespeichert = QComboBox()
+        self.gespeichert.setMinimumWidth(280)
+        self.gespeichert.setToolTip("Lädt die Angaben der Suche und ihr letztes Ergebnis. Neue Treffer seit dem vorigen Lauf heißen NEU.")
+        self.gespeichert.activated.connect(self._gespeicherte_gewaehlt)
+        reihe_gespeichert.addWidget(self.gespeichert, 1)
+        reihe_gespeichert.addWidget(knopf("💾 Suche speichern", self.suche_speichern))
+        self.k_umbenennen = knopf("Umbenennen", self.suche_umbenennen)
+        self.k_loeschen = knopf("Löschen", self.suche_loeschen)
+        reihe_gespeichert.addWidget(self.k_umbenennen)
+        reihe_gespeichert.addWidget(self.k_loeschen)
+        self.nachts = Schalter("nachts mitlaufen")
+        self.nachts.setToolTip("Der Nachtlauf prüft alle so markierten Suchen; der Morgenbericht nennt, welche Suche was gefunden hat.")
+        self.nachts.toggled.connect(self._nachts_geschaltet)
+        reihe_gespeichert.addWidget(self.nachts)
+        self.ergebnis_info = label("", "gedimmt")
+        reihe_gespeichert.addWidget(self.ergebnis_info)
+        karte.lage.addLayout(reihe_gespeichert)
         self.was = QLineEdit()
         self.was.setPlaceholderText("Berufe: werden aus deinen Fakten abgeleitet")
         self.was.returnPressed.connect(self.suchen)
@@ -1336,8 +1357,10 @@ class SucheSeite(Seite):
         ergebnis.lage.addWidget(self.hinweis)
         self.ausfaelle = Laufband("System Probs:")  # eine Zeile, die Hinweise fahren nacheinander durch
         ergebnis.lage.addWidget(self.ausfaelle)
-        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI", "Alter"],
-                           [50, 165, None, 95, 52, 80, 60, 110, 62])
+        self.tab = tabelle(["Nähe", "Firma", "Worum es geht", "Ort", "km", "Quelle", "Status", "KI", "Alter", "Gehalt"],
+                           [50, 165, None, 95, 52, 80, 60, 110, 62, 120])
+        self.tab.horizontalHeaderItem(SPALTE_GEHALT).setToolTip("Falls die Anzeige eins nennt. Sortiert nach Jahresbetrag "
+                                                                "(Monat × 12, Stunde × 2.080).")
         self.tab.horizontalHeaderItem(4).setToolTip("Fahrstrecke mit dem Auto. ≈ heißt Luftlinie, wenn keine Route bekannt ist.")
         # Sortiert wird über alle Seiten: Klick auf den Kopf sortiert die ganze Trefferliste, nicht nur die sichtbare Seite.
         self.tab.setSortingEnabled(False)
@@ -1397,6 +1420,7 @@ class SucheSeite(Seite):
         unten.addWidget(details)
         lage.addLayout(unten, 1)
         self.treffer: dict[int, dict] = {}
+        self.letzte_hinweise: list[str] = []
         self.vorbelegt = False
         self.aktive_zeile = None
         self.verzoegerung = QTimer(self)
@@ -1463,6 +1487,9 @@ class SucheSeite(Seite):
             self.aufgefrischte.setChecked(lies("aufgefrischte", "1") == "1")
             self._waehle(self.remote, lies("remote"))
             self._internet_moeglich()
+            self._fuelle_gespeicherte()
+            if not self.treffer:  # Das letzte Ergebnis übersteht einen Neustart
+                self._zeige_gemerktes(gespeicherte.aktiv(self.conn))
         if not self.ausschluss.hasFocus():
             self.ausschluss.setText(db.einstellung(self.conn, "suche.ausschluss", ""))
         abgeleitet = db.einstellung(self.conn, "suche.abgeleitet_stichwoerter", "")
@@ -1473,8 +1500,8 @@ class SucheSeite(Seite):
         return (t["naehe"] if t["naehe"] is not None else "", t["firma"], t["titel"],
                 ("🏠 " if t.get("remote") else "") + t["ort"],
                 km_text(t), t.get("quelle", ""),
-                "in Liste" if t["bekannt"] else "Konzern" if t.get("konzern") else "",
-                ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", "")))
+                "in Liste" if t["bekannt"] else "NEU" if t.get("neu") else "Konzern" if t.get("konzern") else "",
+                ", ".join(t.get("ki") or []), suche.alter_tage(t.get("datum", "")), t.get("gehalt", ""))
 
     def _reihenfolge(self) -> list[int]:
         """IDs aller Treffer in der gewählten Sortierung (ohne Wahl: wie die Suche sie geliefert hat)."""
@@ -1485,6 +1512,9 @@ class SucheSeite(Seite):
 
         def schluessel(i):
             wert = self._zeile(self.treffer[i])[spalte]
+            if spalte == SPALTE_GEHALT:  # nach Jahresbetrag, ohne Angabe ans Ende
+                jahr = self.treffer[i].get("gehalt_jahr")
+                return (0, jahr) if isinstance(jahr, (int, float)) else (1, 0)
             if spalte == 4:  # km: „≈ 12 km“ und „12 km“ als Zahl, ohne Angabe ans Ende
                 ziffern = "".join(ch for ch in str(wert) if ch.isdigit())
                 return (0, int(ziffern)) if ziffern else (1, 0)
@@ -1554,6 +1584,10 @@ class SucheSeite(Seite):
                 item.setToolTip(suche.alter_text(t))
             if t.get("remote"):
                 self.tab.item(r, SPALTE_ORT).setToolTip(remote_text(t))
+            status = self.tab.item(r, 6)
+            if status is not None and status.text() == "NEU":  # neu seit dem letzten Lauf dieser Suche
+                status.setForeground(QColor("#39ff14" if theme.AKTUELL is theme.DUNKEL else "#1a7a00"))
+                status.setToolTip("Neu seit dem letzten Lauf dieser gespeicherten Suche")
 
     def _stellenquellen(self):
         return (("postfach", self.q_postfach), ("portale", self.q_portale))
@@ -1592,7 +1626,7 @@ class SucheSeite(Seite):
         if not auftrag.quellen:
             return self.f.melde("Wähle mindestens eine Quelle.")
         self.ausfaelle.clear()
-        self.f.starte("Passende Firmen finden", lambda conn, fort: suche.finde_passende(conn, modell, auftrag, fort),
+        self.f.starte("Passende Firmen finden", lambda conn, fort: gespeicherte.merke(conn, suche.finde_passende(conn, modell, auftrag, fort)),
                       nach=self.passende_gefunden)
 
     def passende_gefunden(self, ergebnis):
@@ -1609,10 +1643,15 @@ class SucheSeite(Seite):
         if not auftrag.quellen:
             return self.f.melde("Wähle mindestens eine Quelle.")
         self.ausfaelle.clear()
-        self.f.starte("Firmen suchen", lambda conn, fort: suche.suche_ueberall(conn, auftrag, fort), nach=self.gefunden)
+        self.f.starte("Firmen suchen", lambda conn, fort: gespeicherte.merke(conn, suche.suche_ueberall(conn, auftrag, fort)),
+                      nach=self.gefunden)
 
     def gefunden(self, ergebnis):
         self.treffer = dict(enumerate(ergebnis["treffer"]))
+        self.letzte_hinweise = list(ergebnis.get("hinweise", []))
+        self._fuelle_gespeicherte()
+        if ergebnis.get("neu"):
+            self.f.melde(f"{ergebnis['neu']} neue Treffer seit dem letzten Lauf dieser Suche.")
         self.ausfaelle.setText("\n".join(ergebnis.get("hinweise", [])))
         if ergebnis.get("zeiten_text"):
             self.f.melde(ergebnis["zeiten_text"])
@@ -1621,6 +1660,106 @@ class SucheSeite(Seite):
         self._zeige()
         if not ergebnis["treffer"]:
             self.f.melde("Keine Treffer. Versuche andere Begriffe, eine andere Branche oder ein größeres Gebiet.")
+
+    # --- Gespeicherte Suchen ------------------------------------------------------------------------------------------
+    def _fuelle_gespeicherte(self):
+        aktiv = gespeicherte.aktiv(self.conn)
+        self.gespeichert.blockSignals(True)
+        self.gespeichert.clear()
+        self.gespeichert.addItem("Aktuelle Angaben (nicht gespeichert)", gespeicherte.ZULETZT)
+        for s in gespeicherte.liste(self.conn):
+            zusatz = []
+            if s.get("anzahl") is not None:
+                zusatz.append(f"{s['anzahl']} Treffer")
+            if s.get("neu"):
+                zusatz.append(f"{s['neu']} neu")
+            if s.get("nachts"):
+                zusatz.append("🌙")
+            self.gespeichert.addItem(s["name"] + (f"  ·  {', '.join(zusatz)}" if zusatz else ""), s["id"])
+        self.gespeichert.setCurrentIndex(max(0, self.gespeichert.findData(aktiv)))
+        self.gespeichert.blockSignals(False)
+        gewaehlt = aktiv != gespeicherte.ZULETZT
+        self.k_umbenennen.setEnabled(gewaehlt)
+        self.k_loeschen.setEnabled(gewaehlt)
+        self.nachts.blockSignals(True)
+        self.nachts.setChecked(bool(gewaehlt and (gespeicherte.hole(self.conn, aktiv) or {}).get("nachts")))
+        self.nachts.blockSignals(False)
+        self.nachts.setEnabled(gewaehlt)
+        gemerkt = gespeicherte.letztes_ergebnis(self.conn, aktiv)
+        self.ergebnis_info.setText(f"Ergebnis vom {gemerkt['zeit'][8:10]}.{gemerkt['zeit'][5:7]}. {gemerkt['zeit'][11:16]}" if gemerkt else "")
+
+    def _zeige_gemerktes(self, sid):
+        gemerkt = gespeicherte.letztes_ergebnis(self.conn, sid)
+        if gemerkt:
+            bekannt = suche.bekannte_firmen(self.conn)
+            for t in gemerkt["treffer"]:
+                t["bekannt"] = regeln.kurzname(t["firma"]).lower() in bekannt
+            self.gefunden(gemerkt)
+        else:
+            self.treffer = {}
+            self.ausfaelle.clear()
+            self._zeige()
+
+    def _angaben_neu_laden(self):
+        self.vorbelegt = False
+        self.aktualisieren()
+
+    def _gespeicherte_gewaehlt(self, _i=None):
+        sid = self.gespeichert.currentData()
+        try:
+            if sid == gespeicherte.ZULETZT:
+                gespeicherte.setze_aktiv(self.conn, sid)
+            else:
+                gespeicherte.laden(self.conn, sid)
+        except gespeicherte.SuchenFehler as fehler:
+            return self.f.melde(str(fehler))
+        self._angaben_neu_laden()
+        self._zeige_gemerktes(sid)
+        self._fuelle_gespeicherte()
+
+    def suche_speichern(self):
+        aktiv = gespeicherte.hole(self.conn, gespeicherte.aktiv(self.conn))
+        name, ok = QInputDialog.getText(self, "Suche speichern", "Name der Suche (gleicher Name überschreibt):",
+                                        text=aktiv["name"] if aktiv else "")
+        if not ok:
+            return
+        self._auftrag()  # aktuelle Angaben in die Einstellungen
+        try:
+            s = gespeicherte.speichern(self.conn, name)
+        except gespeicherte.SuchenFehler as fehler:
+            return self.f.melde(str(fehler))
+        gespeicherte.setze_aktiv(self.conn, s["id"])
+        if self.treffer:  # das Ergebnis auf dem Schirm gehört jetzt zu dieser Suche
+            gespeicherte.ergebnis_merken(self.conn, s["id"], {"treffer": list(self.treffer.values()),
+                                                              "hinweise": self.letzte_hinweise})
+        self._fuelle_gespeicherte()
+        self.f.melde(f"Suche „{s['name']}“ gespeichert.")
+
+    def suche_umbenennen(self):
+        sid = gespeicherte.aktiv(self.conn)
+        s = gespeicherte.hole(self.conn, sid)
+        if not s:
+            return
+        name, ok = QInputDialog.getText(self, "Suche umbenennen", "Neuer Name:", text=s["name"])
+        if ok:
+            try:
+                gespeicherte.aendern(self.conn, sid, name=name)
+            except gespeicherte.SuchenFehler as fehler:
+                return self.f.melde(str(fehler))
+            self._fuelle_gespeicherte()
+
+    def suche_loeschen(self):
+        sid = gespeicherte.aktiv(self.conn)
+        s = gespeicherte.hole(self.conn, sid)
+        if s and QMessageBox.question(self, "Suche löschen", f"„{s['name']}“ samt gespeichertem Ergebnis löschen?") == QMessageBox.Yes:
+            gespeicherte.loeschen(self.conn, sid)
+            self._fuelle_gespeicherte()
+
+    def _nachts_geschaltet(self, an):
+        sid = gespeicherte.aktiv(self.conn)
+        if sid != gespeicherte.ZULETZT:
+            gespeicherte.aendern(self.conn, sid, nachts=an)
+            self._fuelle_gespeicherte()
 
     def _gewaehlt(self):
         zeile = zeilen_id(self.tab)
@@ -1715,6 +1854,8 @@ class SucheSeite(Seite):
         if ort:
             teile.append(e(ort))
         teile.append(f"Quelle: {e(t.get('quelle', ''))}")
+        if t.get("gehalt"):
+            teile.append(f"Gehalt: <b>{e(t['gehalt'])}</b>")
         alter = suche.alter_text(t)
         if alter:
             teile.append(e(alter[0].upper() + alter[1:]))

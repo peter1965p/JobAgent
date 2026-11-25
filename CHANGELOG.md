@@ -2,6 +2,15 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.16.0 – 2026-11-25
+
+### Neu
+- **Gespeicherte Suchen:** Angaben der Suchseite (Begriffe, Ort, Gebiet, Quellen, Filter, Stichwörter, Ausschlüsse …) unter einem Namen speichern, laden, umbenennen, löschen – in Desktop und Web, je Person bzw. Mandant.
+- **Ergebnisse werden gespeichert:** Jede gespeicherte Suche merkt sich ihre letzte Trefferliste; ohne gespeicherte Suche bleibt das letzte Ergebnis erhalten. Die Trefferliste übersteht damit einen Neustart (Web: auch einen Neustart des Dienstes).
+- **NEU:** Treffer, die beim vorigen Lauf derselben Suche noch nicht da waren, stehen in der Spalte Status als NEU; die Auswahlliste zeigt „n Treffer, k neu“.
+- **Nachtlauf mit mehreren Suchen:** Suchen mit „nachts mitlaufen“ laufen nacheinander, jede mit eigenem Ergebnis; der Morgenbericht nennt, welche Suche wie viel (und wie viel Neues) gebracht hat. Die Suchseite bleibt danach, wie sie war.
+- **Gehalt:** Gehaltsangaben aus Job-Alerts (z. B. „48.000 € pro Jahr“, „20 € pro Stunde“) und aus Anzeigentexten werden erkannt, vereinheitlicht („3.500–4.200 €/Monat“) und als eigene Spalte gezeigt, sortierbar nach Jahresbetrag (Monat × 12, Stunde × 2.080). Preise, Boni und Ähnliches zählen nicht.
+
 ## 0.15.2 – 2026-11-25
 
 ### Behoben

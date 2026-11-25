@@ -2268,3 +2268,31 @@ def test_anrede_aus_anzeige_mit_du_und_kleinschreibung():
     assert ki.klein_nach_anrede("Zuletzt habe ich") == "zuletzt habe ich"
     assert ki.klein_nach_anrede("Sie suchen jemanden") == "Sie suchen jemanden"
     assert ki.klein_nach_anrede("Datenbanken sind mein Ding") == "Datenbanken sind mein Ding"
+
+
+def test_nachtlauf_mit_gespeicherten_suchen(conn, monkeypatch):
+    from jobsuche import suchen
+    _bereit(conn)
+    s1 = suchen.speichern(conn, "Entwickler Bremen", nachts=True)
+    db.setze_einstellung(conn, "suche.begriffe", "Admin")
+    s2 = suchen.speichern(conn, "Admin Bremen", nachts=True)
+    suchen.speichern(conn, "Nur tagsüber")                          # läuft nachts nicht mit
+    db.setze_einstellung(conn, "suche.begriffe", "Was ich gerade tippe")
+    gelaufen = []
+
+    def ueberall(conn_, auftrag, melde=None, client=None):
+        gelaufen.append(auftrag.begriffe)
+        firma = "Gut" if auftrag.begriffe == "Entwickler" else "Schwach"
+        return {"treffer": [{"referenz": firma, "firma": firma, "titel": "x", "beruf": "", "ort": "Bremen", "entfernung": 1,
+                             "url": f"https://{firma.lower()}.de/job", "website": f"https://{firma.lower()}.de/", "naehe": 50, "bekannt": False,
+                             "quelle": "Verzeichnis"}], "hinweise": []}
+    monkeypatch.setattr(suche, "suche_ueberall", ueberall)
+    client, _ = _netz_nacht([])
+    bericht = nacht.lauf(conn, "m", chat=_Nacht([80, 20]), client=client)
+    assert not bericht["fehler"], bericht["fehler"]
+    assert gelaufen == ["Entwickler", "Admin"]
+    assert [(x["name"], x["gefunden"]) for x in bericht["suchen"]] == [("Entwickler Bremen", 1), ("Admin Bremen", 1)]
+    assert bericht["firmen"][0]["suche"] == "Entwickler Bremen"
+    assert suchen.letztes_ergebnis(conn, s1["id"])["treffer"][0]["firma"] == "Gut"
+    assert suchen.letztes_ergebnis(conn, s2["id"])["treffer"][0]["firma"] == "Schwach"
+    assert db.einstellung(conn, "suche.begriffe", "") == "Was ich gerade tippe"    # Suchseite bleibt, wie sie war

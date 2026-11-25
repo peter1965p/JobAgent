@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .. import suchen as gespeicherte
 from .. import (__version__, angaben, config, db, firmen, geheim, ki, lernen, llm, mailkonten, mandanten, nacht, person,
                 profil, quellen, rag, regeln, suche, uebersicht, versand)
 from .auftraege import MELDBAR, Auftraege, ZuViele
@@ -86,6 +87,16 @@ class SucheIn(BaseModel):
     remote: str = Field("", max_length=20)
     stichwoerter: str = Field("", max_length=500)
     ausschluss: str = Field("", max_length=500)
+
+
+class SucheSpeichernIn(BaseModel):
+    name: str = Field(max_length=60)
+    werte: SucheIn
+
+
+class SucheAendernIn(BaseModel):
+    name: str | None = Field(None, max_length=60)
+    nachts: bool | None = None
 
 
 class FirmaIn(BaseModel):
@@ -201,17 +212,20 @@ def _km(t: dict) -> str:
 def _treffer_zeile(i: int, t: dict) -> dict:
     return {"i": i, "naehe": t.get("naehe"), "firma": t.get("firma", ""), "titel": t.get("titel", ""),
             "ort": t.get("ort", ""), "remote": t.get("remote", ""), "km": _km(t), "quelle": t.get("quelle", ""),
-            "status": "in Liste" if t.get("bekannt") else "Konzern" if t.get("konzern") else "",
+            "status": "in Liste" if t.get("bekannt") else "NEU" if t.get("neu") else "Konzern" if t.get("konzern") else "",
             "ki": ", ".join(t.get("ki") or []), "alter": suche.alter_tage(t.get("datum", "")),
-            "ampel": suche.ampel(t), "alter_text": suche.alter_text(t)}
+            "ampel": suche.ampel(t), "alter_text": suche.alter_text(t),
+            "gehalt": t.get("gehalt", ""), "gehalt_jahr": t.get("gehalt_jahr"), "neu": bool(t.get("neu"))}
 
 
-SORTIER = {"naehe", "firma", "titel", "ort", "km", "quelle", "status", "ki", "alter"}
+SORTIER = {"naehe", "firma", "titel", "ort", "km", "quelle", "status", "ki", "alter", "gehalt"}
 
 
 def _sortiere(zeilen: list[dict], spalte: str, ab: bool) -> list[dict]:
     def schluessel(z):
         w = z[spalte]
+        if spalte == "gehalt":  # nach Jahresbetrag
+            return (0, z["gehalt_jahr"]) if isinstance(z.get("gehalt_jahr"), (int, float)) else (1, 0)
         if spalte == "km":
             ziffern = "".join(ch for ch in str(w) if ch.isdigit())
             return (0, int(ziffern)) if ziffern else (1, 0)
@@ -532,6 +546,27 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
         return mit_conn(k, lambda conn: _ausgabe(uebersicht.stand(conn)))
 
     # --- Suche ---------------------------------------------------------------------------------------------------------
+    def angaben_schreiben(conn, daten_in: SucheIn, gewaehlt: tuple) -> suche.Auftrag:
+        """Angaben der Suchseite in die Einstellungen (gelten auch für Nachtlauf und gespeicherte Suchen)."""
+        searxng = db.einstellung(conn, "suche.searxng", "")
+        woerter = dict.fromkeys(w.strip() for w in daten_in.ausschluss.split(",") if w.strip())
+        db.setze_einstellung(conn, "suche.ausschluss", ", ".join(woerter))
+        db.setze_einstellung(conn, "suche.stichwoerter", ", ".join(suche.bereinige_stichwoerter(daten_in.stichwoerter.split(","))))
+        ort = daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.ort.strip()
+        umkreis = 0 if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.umkreis
+        auftrag = suche.Auftrag(daten_in.begriffe, ort, daten_in.land if daten_in.land in quellen.LAENDER else "de", umkreis,
+                                daten_in.branche if daten_in.branche in quellen.BRANCHEN else "", gewaehlt, searxng,
+                                daten_in.arbeitszeit if daten_in.arbeitszeit in suche.ARBEITSZEIT else "", daten_in.nur_ki,
+                                daten_in.max_tage, daten_in.aufgefrischte, daten_in.remote if daten_in.remote in suche.REMOTE else "")
+        for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
+                           ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche), ("quellen", ",".join(gewaehlt)),
+                           ("arbeitszeit", auftrag.arbeitszeit), ("bundesland", daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else ""),
+                           ("nur_ki", "1" if auftrag.nur_ki else "0"), ("max_tage", str(auftrag.max_tage)),
+                           ("aufgefrischte", "1" if auftrag.aufgefrischte else "0"), ("remote", auftrag.remote),
+                           ("max_treffer", str(daten_in.max_treffer))):
+            db.setze_einstellung(conn, f"suche.{name}", wert)
+        return auftrag
+
     @app.get("/api/suche")
     def suche_lesen(request: Request):
         k = kontext(request)
@@ -561,23 +596,7 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
             raise HTTPException(400, "Unbekannter Modus.")
 
         def speichern(conn):
-            searxng = db.einstellung(conn, "suche.searxng", "")
-            woerter = dict.fromkeys(w.strip() for w in daten_in.ausschluss.split(",") if w.strip())
-            db.setze_einstellung(conn, "suche.ausschluss", ", ".join(woerter))
-            db.setze_einstellung(conn, "suche.stichwoerter", ", ".join(suche.bereinige_stichwoerter(daten_in.stichwoerter.split(","))))
-            ort = daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.ort.strip()
-            umkreis = 0 if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.umkreis
-            auftrag = suche.Auftrag(daten_in.begriffe, ort, daten_in.land if daten_in.land in quellen.LAENDER else "de", umkreis,
-                                    daten_in.branche if daten_in.branche in quellen.BRANCHEN else "", gewaehlt, searxng,
-                                    daten_in.arbeitszeit if daten_in.arbeitszeit in suche.ARBEITSZEIT else "", daten_in.nur_ki,
-                                    daten_in.max_tage, daten_in.aufgefrischte, daten_in.remote if daten_in.remote in suche.REMOTE else "")
-            for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
-                               ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche), ("quellen", ",".join(gewaehlt)),
-                               ("arbeitszeit", auftrag.arbeitszeit), ("bundesland", daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else ""),
-                               ("nur_ki", "1" if auftrag.nur_ki else "0"), ("max_tage", str(auftrag.max_tage)),
-                               ("aufgefrischte", "1" if auftrag.aufgefrischte else "0"), ("remote", auftrag.remote),
-                               ("max_treffer", str(daten_in.max_treffer))):
-                db.setze_einstellung(conn, f"suche.{name}", wert)
+            auftrag = angaben_schreiben(conn, daten_in, gewaehlt)
             if daten_in.modus == "suchen" and not auftrag.begriffe.strip():
                 abgeleitet = db.einstellung(conn, "suche.abgeleitet", "")
                 if abgeleitet:
@@ -591,8 +610,9 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
                 ergebnis = suche.finde_passende(conn, m, auftrag, melde)
             else:
                 ergebnis = suche.suche_ueberall(conn, auftrag, melde)
+            ergebnis = gespeicherte.merke(conn, ergebnis)
             treffer[schluessel] = list(ergebnis["treffer"])
-            return {"anzahl": len(ergebnis["treffer"]), "hinweise": ergebnis.get("hinweise", []),
+            return {"anzahl": len(ergebnis["treffer"]), "neu": ergebnis.get("neu"), "hinweise": ergebnis.get("hinweise", []),
                     "begriffe": ergebnis.get("begriffe"), "ort": ergebnis.get("ort"),
                     "zeiten_text": ergebnis.get("zeiten_text", "")}
         return starte(k, "Firmen suchen", arbeit)
@@ -600,7 +620,7 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
     @app.get("/api/suche/treffer")
     def treffer_seite(request: Request, seite: int = 0, pro_seite: int = 50, sortierung: str = "", ab: bool = False):
         k = kontext(request)
-        liste = treffer.get((k.info.id, k.konto.id), [])
+        liste = _treffer_liste(k)
         pro_seite = pro_seite if pro_seite in (25, 50, 100) else 50
         bekannt = mit_conn(k, suche.bekannte_firmen)
         for t in liste:
@@ -613,8 +633,16 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
         return {"gesamt": len(zeilen), "seite": seite, "seiten": seiten, "pro_seite": pro_seite,
                 "zeilen": zeilen[seite * pro_seite:(seite + 1) * pro_seite]}
 
+    def _treffer_liste(k: Kontext) -> list[dict]:
+        """Treffer im Speicher, sonst das gespeicherte Ergebnis der aktiven Suche (übersteht einen Neustart)."""
+        schluessel = (k.info.id, k.konto.id)
+        if schluessel not in treffer:
+            gemerkt = mit_conn(k, lambda conn: gespeicherte.letztes_ergebnis(conn, gespeicherte.aktiv(conn)))
+            treffer[schluessel] = list((gemerkt or {}).get("treffer", []))
+        return treffer[schluessel]
+
     def _ein_treffer(k: Kontext, i: int) -> dict:
-        liste = treffer.get((k.info.id, k.konto.id), [])
+        liste = _treffer_liste(k)
         if not 0 <= i < len(liste):
             raise HTTPException(404, "Treffer unbekannt. Bitte neu suchen.")
         return liste[i]
@@ -661,6 +689,73 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
                 ergebnis["eignung_text"] = ki.eignung_text(ergebnis["eignung"])
             return ergebnis
         return starte(k, {"uebernehmen": "Firma übernehmen", "inhaber": "Inhaber finden", "sofort": "Sofort bewerben"}[aktion], arbeit)
+
+    # --- Gespeicherte Suchen -------------------------------------------------------------------------------------------
+    def _suchen_stand(conn) -> dict:
+        aktiv = gespeicherte.aktiv(conn)
+        gemerkt = gespeicherte.letztes_ergebnis(conn, aktiv)
+        return {"aktiv": aktiv, "zeit": (gemerkt or {}).get("zeit", ""),
+                "suchen": [{k_: s_.get(k_) for k_ in ("id", "name", "nachts", "zuletzt", "anzahl", "neu")} for s_ in gespeicherte.liste(conn)]}
+
+    @app.get("/api/suchen")
+    def suchen_liste(request: Request):
+        k = kontext(request)
+        return mit_conn(k, _suchen_stand)
+
+    @app.post("/api/suchen")
+    def suche_speichern(daten_in: SucheSpeichernIn, request: Request):
+        k = kontext(request)
+        erlaubt = {"verzeichnis", "jobboerse", "arbeitnow", "internet", "postfach", "portale"}
+        gewaehlt = tuple(q for q in daten_in.werte.quellen if q in erlaubt)
+
+        def arbeit(conn):
+            angaben_schreiben(conn, daten_in.werte, gewaehlt)
+            s_ = gespeicherte.speichern(conn, daten_in.name)
+            gespeicherte.setze_aktiv(conn, s_["id"])
+            jetzt = treffer.get((k.info.id, k.konto.id))
+            if jetzt:  # das Ergebnis auf dem Schirm gehört jetzt zu dieser Suche
+                gespeicherte.ergebnis_merken(conn, s_["id"], {"treffer": jetzt})
+            return _suchen_stand(conn)
+        try:
+            return mit_conn(k, arbeit)
+        except gespeicherte.SuchenFehler as fehler:
+            raise HTTPException(400, str(fehler))
+
+    @app.post("/api/suchen/{sid}/laden")
+    def suche_laden(sid: str, request: Request):
+        k = kontext(request)
+
+        def arbeit(conn):
+            if sid == gespeicherte.ZULETZT:
+                gespeicherte.setze_aktiv(conn, sid)
+            else:
+                gespeicherte.laden(conn, sid)
+            return gespeicherte.letztes_ergebnis(conn, sid)
+        try:
+            gemerkt = mit_conn(k, arbeit)
+        except gespeicherte.SuchenFehler as fehler:
+            raise HTTPException(404, str(fehler))
+        treffer[(k.info.id, k.konto.id)] = list((gemerkt or {}).get("treffer", []))
+        return {"stand": mit_conn(k, _suchen_stand), "hinweise": (gemerkt or {}).get("hinweise", []),
+                "anzahl": len(treffer[(k.info.id, k.konto.id)])}
+
+    @app.patch("/api/suchen/{sid}")
+    def suche_aendern(sid: str, daten_in: SucheAendernIn, request: Request):
+        k = kontext(request)
+        try:
+            mit_conn(k, lambda conn: gespeicherte.aendern(conn, sid, daten_in.name, daten_in.nachts))
+        except gespeicherte.SuchenFehler as fehler:
+            raise HTTPException(400, str(fehler))
+        return mit_conn(k, _suchen_stand)
+
+    @app.delete("/api/suchen/{sid}")
+    def suche_loeschen(sid: str, request: Request):
+        k = kontext(request)
+        try:
+            mit_conn(k, lambda conn: gespeicherte.loeschen(conn, sid))
+        except gespeicherte.SuchenFehler as fehler:
+            raise HTTPException(404, str(fehler))
+        return mit_conn(k, _suchen_stand)
 
     # --- Firmen --------------------------------------------------------------------------------------------------------
     @app.get("/api/firmen")

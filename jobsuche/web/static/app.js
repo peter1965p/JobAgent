@@ -319,13 +319,13 @@ function tabelle(kopf, zeilen, sortiere, sortierung) {
 }
 
 const SPALTEN = [["naehe", "Nähe"], ["firma", "Firma"], ["titel", "Worum es geht"], ["ort", "Ort"], ["km", "km"], ["quelle", "Quelle"],
-  ["status", "Status"], ["ki", "KI"], ["alter", "Alter"]];
+  ["status", "Status"], ["ki", "KI"], ["alter", "Alter"], ["gehalt", "Gehalt"]];
 const QUELLEN = [["verzeichnis", "Firmenverzeichnis"], ["internet", "Internet"], ["jobboerse", "Jobbörse"], ["arbeitnow", "Arbeitnow"],
   ["postfach", "Job-Alerts"], ["portale", "Portale"]];
 const S = { seite: 0, pro: 50, sort: "", ab: false, gewaehlt: null };
 
 SEITEN.suche = async (ziel) => {
-  const d = await api("suche");
+  const [d, gs] = await Promise.all([api("suche"), api("suchen")]);
   const w = d.werte;
   const f = {
     begriffe: el("input", { value: w.begriffe, placeholder: "Berufe: werden aus deinen Fakten abgeleitet", maxlength: 500 }),
@@ -353,6 +353,47 @@ SEITEN.suche = async (ziel) => {
     nur_ki: f.nur_ki.checked, stichwoerter: f.stichwoerter.value, ausschluss: f.ausschluss.value,
     quellen: QUELLEN.map(([q]) => q).filter((q) => quellen[q].checked),
   });
+  // --- Gespeicherte Suchen
+  const gsel = el("select", { title: "Lädt Angaben und letztes Ergebnis. Neue Treffer seit dem vorigen Lauf heißen NEU." });
+  const gnachts = el("input", { type: "checkbox" });
+  const ginfo = el("span", { class: "gedimmt klein" });
+  const gumbenennen = knopf("Umbenennen", async () => {
+    const name = el("input", { value: gsel.selectedOptions[0]?.dataset.name || "", maxlength: 60 });
+    dialog("Suche umbenennen", name, [knopf("Speichern", async () => {
+      const st = await versuche(() => api("suchen/" + gsel.value, "PATCH", { name: name.value }));
+      if (st) { schliesseDialog(); zeigeStand(st); }
+    }, "primaer"), knopf("Abbrechen", schliesseDialog)]);
+  });
+  const gloeschen = knopf("Löschen", () => dialog("Suche löschen", el("p", {}, `„${gsel.selectedOptions[0]?.dataset.name}“ samt gespeichertem Ergebnis löschen?`),
+    [knopf("Löschen", async () => { const st = await versuche(() => api("suchen/" + gsel.value, "DELETE")); if (st) { schliesseDialog(); zeigeStand(st); } }, "gefahr"),
+     knopf("Abbrechen", schliesseDialog)]));
+  const zeigeStand = (st) => {
+    rc(gsel, el("option", { value: "zuletzt" }, "Aktuelle Angaben (nicht gespeichert)"), st.suchen.map((x) => {
+      const zusatz = [x.anzahl != null ? x.anzahl + " Treffer" : "", x.neu ? x.neu + " neu" : "", x.nachts ? "🌙" : ""].filter(Boolean).join(", ");
+      return el("option", { value: x.id, "data-name": x.name, selected: x.id === st.aktiv ? "selected" : null }, x.name + (zusatz ? "  ·  " + zusatz : ""));
+    }));
+    const eigene = st.aktiv !== "zuletzt";
+    gnachts.checked = eigene && !!st.suchen.find((x) => x.id === st.aktiv)?.nachts;
+    gnachts.disabled = gumbenennen.disabled = gloeschen.disabled = !eigene;
+    ginfo.textContent = st.zeit ? `Ergebnis vom ${st.zeit.slice(8, 10)}.${st.zeit.slice(5, 7)}. ${st.zeit.slice(11, 16)}` : "";
+  };
+  gsel.addEventListener("change", async () => {
+    const r = await versuche(() => api(`suchen/${gsel.value}/laden`, "POST", {}));
+    if (r) { await zeige("suche"); toast(`${r.anzahl} Treffer geladen`, r.anzahl ? "erfolg" : ""); }
+  });
+  gnachts.addEventListener("change", async () => {
+    const st = await versuche(() => api("suchen/" + gsel.value, "PATCH", { nachts: gnachts.checked }));
+    if (st) zeigeStand(st);
+  });
+  const gspeichern = knopf("💾 Suche speichern", () => {
+    const name = el("input", { value: gsel.value !== "zuletzt" ? gsel.selectedOptions[0]?.dataset.name || "" : "", maxlength: 60, placeholder: "z. B. Admin Niedersachsen" });
+    dialog("Suche speichern", el("div", { class: "spalte" }, el("p", { class: "gedimmt klein" }, "Gleicher Name überschreibt. Das Ergebnis auf dem Schirm wird mitgespeichert."), name),
+      [knopf("Speichern", async () => {
+        const st = await versuche(() => api("suchen", "POST", { name: name.value, werte: sammeln("suchen") }));
+        if (st) { schliesseDialog(); zeigeStand(st); toast("Suche gespeichert", "erfolg"); }
+      }, "primaer"), knopf("Abbrechen", schliesseDialog)]);
+  });
+  zeigeStand(gs);
   const hinweise = el("div", { class: "hinweis details klein" });
   const liste = el("div");
   const details = el("div", { class: "spalte" }, el("p", { class: "gedimmt" }, "Klicke auf einen Treffer."));
@@ -360,7 +401,9 @@ SEITEN.suche = async (ziel) => {
     hinweise.textContent = [...(e.hinweise || []), e.zeiten_text || ""].filter(Boolean).join("\n");
     if (e.begriffe) f.begriffe.value = e.begriffe.join(", ");
     S.seite = 0; S.sort = ""; S.gewaehlt = null;
-    toast(`${e.anzahl} Treffer`, e.anzahl ? "erfolg" : "");
+    toast(`${e.anzahl} Treffer` + (e.neu ? `, ${e.neu} neu` : ""), e.anzahl ? "erfolg" : "");
+    const st = await versuche(() => api("suchen"));
+    if (st) zeigeStand(st);
     await zeigeTreffer();
   };
   const zeigeTreffer = async () => {
@@ -368,8 +411,9 @@ SEITEN.suche = async (ziel) => {
     S.seite = r.seite;
     const sortIdx = SPALTEN.findIndex(([k]) => k === S.sort);
     const tab = tabelle(SPALTEN.map(([, t]) => t), r.zeilen.map((z) => ({
-      zellen: [z.naehe ?? "", z.firma, z.titel, (z.remote ? "🏠 " : "") + z.ort, z.km, z.quelle, z.status, z.ki,
-        el("span", { title: z.alter_text }, z.ampel ? el("span", { class: "punkt " + z.ampel }) : null, z.alter ?? "")],
+      zellen: [z.naehe ?? "", z.firma, z.titel, (z.remote ? "🏠 " : "") + z.ort, z.km, z.quelle,
+        z.neu && z.status === "NEU" ? el("span", { class: "neu" }, "NEU") : z.status, z.ki,
+        el("span", { title: z.alter_text }, z.ampel ? el("span", { class: "punkt " + z.ampel }) : null, z.alter ?? ""), z.gehalt || ""],
       klick: () => zeigeDetail(z.i),
     })), (i) => { const k = SPALTEN[i][0]; S.ab = S.sort === k ? !S.ab : k === "naehe"; S.sort = k; S.seite = 0; zeigeTreffer(); },
     sortIdx >= 0 ? [sortIdx, S.ab] : null);
@@ -395,6 +439,7 @@ SEITEN.suche = async (ziel) => {
     const v = t.vorschau;
     const teile = [el("b", {}, t.firma), el("div", {}, t.titel), el("div", { class: "gedimmt" }, [t.ort, t.km ? t.km + " km" : ""].filter(Boolean).join(" · ")),
       el("div", { class: "gedimmt" }, "Quelle: " + t.quelle), t.alter_text ? el("div", {}, t.alter_text) : null,
+      t.gehalt ? el("div", {}, "Gehalt: ", el("b", {}, t.gehalt)) : null,
       t.remote ? el("div", {}, "🏠 " + t.remote) : null, t.ki ? el("div", {}, "KI in der Anzeige: " + t.ki) : null,
       el("div", { class: "reihe" }, t.links.map((l) => el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.text)))];
     if (v) {
@@ -417,6 +462,8 @@ SEITEN.suche = async (ziel) => {
   const qreihe = el("div", { class: "reihe" }, QUELLEN.map(([q, n]) => el("label", { class: "reihe" }, quellen[q], n)));
   rc(ziel, 
     karte("Wo und was", el("div", { class: "spalte" },
+      el("div", { class: "reihe" }, el("label", { class: "gedimmt" }, "Gespeicherte Suche:"), gsel, gspeichern, gumbenennen, gloeschen,
+        el("label", { class: "reihe", title: "Der Nachtlauf prüft alle so markierten Suchen" }, gnachts, "nachts mitlaufen"), ginfo),
       f.begriffe,
       el("div", { class: "reihe" }, f.land, f.bundesland, f.ort, f.umkreis, f.branche, f.arbeitszeit, f.remote),
       el("div", { class: "reihe" }, el("label", {}, "höchstens Tage alt "), f.max_tage, el("label", {}, "max. Treffer "), f.max_treffer,

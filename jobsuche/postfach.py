@@ -26,7 +26,7 @@ import keyring
 from bs4 import BeautifulSoup, Comment, NavigableString
 from keyring.errors import KeyringError
 
-from . import db, geheim, mailkonten, versand
+from . import db, gehalt, geheim, mailkonten, versand
 from .quellen import SucheFehler
 
 TAGE = 14  # Ältere Alerts sind meist schon vergeben oder ausgelaufen.
@@ -196,6 +196,7 @@ def stellen_aus_html(html: str, portal: Portal) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     stellen, gesehen = [], set()
     for href, zeilen in _blöcke(soup, portal):
+        gehalt_roh = next((z for z in zeilen if gehalt.erkenne(z)), "")  # „48.000 € pro Jahr“ (sonst Rauschen)
         if portal.aufbau == "vorne":
             zeilen = [z for z in zeilen if not RAUSCHEN.match(z)][-3:]  # die letzten drei vor dem Link: Titel, Firma, Ort
             if len(zeilen) < 2:
@@ -219,7 +220,7 @@ def stellen_aus_html(html: str, portal: Portal) -> list[dict]:
         stellen.append({
             "referenz": kennung, "firma": firma[:120], "titel": titel[:200], "beruf": "", "ort": ort[:80], "entfernung": None,
             "url": url, "website": "", "quelle": portal.name if portal.name == "Jobbörse" else f"{portal.name} (Alert)",
-            "beschreibung": "",
+            "beschreibung": "", **({"gehalt_roh": gehalt_roh} if gehalt_roh else {}),
         })
     return stellen
 
@@ -365,8 +366,8 @@ def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_kl
 
 
 # Ändert sich die Auswertung, werden die Mails der letzten Tage einmal neu gelesen (sonst blieben schon gelesene Mails
-# mit dem alten Ergebnis im Cache). 2: Indeed-Einzelvorschläge mit Knopf vor dem Titel.
-PARSER = 2
+# mit dem alten Ergebnis im Cache). 2: Indeed-Einzelvorschläge mit Knopf vor dem Titel. 3: Gehaltsangaben.
+PARSER = 3
 
 
 def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=None) -> tuple[list[dict], list[str]]:

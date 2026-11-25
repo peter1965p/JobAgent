@@ -201,3 +201,36 @@ def test_auftrag_und_trefferseiten(umgebung, monkeypatch):
     andere.headers["X-CSRF"] = r.json()["csrf"]
     assert andere.get(f"/api/auftraege/{aid}").status_code == 404
     assert andere.get("/api/suche/treffer").json()["gesamt"] == 0
+
+
+@nur_mit_server
+def test_gespeicherte_suchen_ergebnis_neu_und_gehalt(umgebung, monkeypatch):
+    c = umgebung["client"]()
+    umgebung["anmelden"](c, "admin@example.org", "admin-passwort-1")
+    runde = {"n": 0}
+
+    def ueberall(conn, auftrag, melde):
+        runde["n"] += 1
+        t = [{"firma": "Muster GmbH", "titel": "Admin", "ort": "Bremen", "quelle": "Jobbörse", "naehe": 5, "entfernung": 3,
+              "luftlinie": False, "bekannt": False, "gehalt": "48.000 €/Jahr", "gehalt_jahr": 48000}]
+        if runde["n"] > 1:
+            t.append({"firma": "Beispiel AG", "titel": "Admin", "ort": "Bremen", "quelle": "Jobbörse", "naehe": 4, "entfernung": 2,
+                      "luftlinie": False, "bekannt": False})
+        return {"treffer": t, "hinweise": []}
+    monkeypatch.setattr(webapp.suche, "suche_ueberall", ueberall)
+    werte = {"modus": "suchen", "begriffe": "Admin", "ort": "Bremen", "quellen": ["jobboerse"]}
+    assert _warte(c, c.post("/api/suche", json=werte).json()["auftrag"])["status"] == "fertig"
+    st = c.post("/api/suchen", json={"name": "Admin Bremen", "werte": werte}).json()
+    sid = st["aktiv"]
+    assert [x["name"] for x in st["suchen"]] == ["Admin Bremen"] and st["suchen"][0]["anzahl"] == 1
+    assert c.patch(f"/api/suchen/{sid}", json={"nachts": True}).json()["suchen"][0]["nachts"] is True
+    e = _warte(c, c.post("/api/suche", json=werte).json()["auftrag"])["ergebnis"]
+    assert e["anzahl"] == 2 and e["neu"] == 1
+    zeilen = c.get("/api/suche/treffer?sortierung=gehalt&ab=true").json()["zeilen"]
+    assert [(z["firma"], z["status"], z["gehalt"]) for z in zeilen] == [("Muster GmbH", "", "48.000 €/Jahr"), ("Beispiel AG", "NEU", "")]
+    # Neustart simuliert: Treffer im Speicher weg, das gespeicherte Ergebnis ist noch da
+    assert c.post(f"/api/suchen/{sid}/laden").json()["anzahl"] == 2
+    assert c.post("/api/suchen/zuletzt/laden").status_code == 200
+    assert c.post("/api/suchen", json={"name": "  ", "werte": werte}).status_code == 400
+    assert [x["name"] for x in c.delete(f"/api/suchen/{sid}").json()["suchen"]] == []
+    assert c.delete(f"/api/suchen/{sid}").status_code == 404
