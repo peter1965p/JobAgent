@@ -99,3 +99,26 @@ def test_stepstone_empfehlung_und_knoepfe_sind_keine_stellen():
             f"<a href='{klick('E5')}'>Unsubscribe from this email</a><p>Please be aware</p><p>© 2026 Stepstone</p>")
     assert [(t, f, o) for t, f, o, _ in _kurz(postfach.stellen_aus_mail(_mail("Stepstone <info@jobagent.stepstone.de>", html)))] == [
         ("IT-Systemadministrator (m/w/d)", "Beispiel Datenservice GmbH", "Düsseldorf")]
+
+
+def test_indeed_einzelvorschlag_knopf_vor_dem_titel_ist_persoenliche_einladung():
+    """„aufgrund Ihres Profils …“: erst „Job anzeigen“, dann „Passt nicht“, darunter die Karte mit demselben Link als Titel."""
+    stelle = "https://de.indeed.com/rc/clk?jk=0011aabbccdd&from=jobi2a_jobmatch-de-DE_email&tk=1"
+    html = (f"<p>Guten Tag,</p><p>aufgrund Ihres Profils könnte diese Stelle passend sein.</p>"
+            f"<a href='{stelle}'>Job anzeigen</a><a href='https://match.indeed.com/invitations/not-interested?tk=1'>Passt nicht</a>"
+            f"<div><a href='{stelle}'>Webentwickler (m/w/d)</a><p>Beispiel App</p><p>Home Office</p><p>Gehalt</p><p>20 € pro Stunde</p>"
+            f"<a href='{stelle}'>Mehr erfahren</a></div>"
+            f"<a href='https://match.indeed.com/invitations/match-rating/1?tk=1'>Nein</a>")
+    stellen = postfach.stellen_aus_mail(_mail("Indeed <donotreply@match.indeed.com>", html))
+    assert _kurz(stellen) == [("Webentwickler (m/w/d)", "Beispiel App", "Home Office", "indeed:0011aabbccdd")]
+    assert stellen[0]["persoenlich"] is True
+    sammel = postfach.stellen_aus_mail(_mail("Indeed <alert@indeed.com>", f"<a href='{stelle}'>Admin (m/w/d)</a><p>Muster GmbH</p><p>Bremen</p>"))
+    assert "persoenlich" not in sammel[0]
+
+
+def test_persoenliche_einladung_umgeht_den_stichwortfilter(tmp_path):
+    from jobsuche import db, suche
+    conn = db.verbinden(tmp_path / "t.db")
+    treffer = [{"titel": "Webentwickler (m/w/d)", "ort": "", "persoenlich": True}, {"titel": "Koch (m/w/d)", "ort": ""}]
+    bleiben, _ = suche.filtere_stellen(conn, treffer, suche.Auftrag(ort=""), ["Administrator", "Linux"], "Job-Alerts")
+    assert [t["titel"] for t in bleiben] == ["Webentwickler (m/w/d)"]

@@ -98,6 +98,7 @@ def _blöcke(soup: BeautifulSoup, portal: Portal) -> list[tuple[str, list[str]]]
     bloecke: list[tuple[str, list[str]]] = []
     letzter_link = None
     offen = False
+    knopf = None  # Anker des Knopfs, mit dem die aktuelle Adresse begann (dann noch keine Karte offen)
     puffer: list[str] = []
     for text in soup.find_all(string=True):
         # Kommentare sind auch NavigableStrings: Outlook-Weichen wie „[if mso]> <table …“ sind kein Text der Mail.
@@ -128,8 +129,15 @@ def _blöcke(soup: BeautifulSoup, portal: Portal) -> list[tuple[str, list[str]]]
                 # Neue Adresse: Beginnt sie mit einem Knopf („I'm interested“, „Because you viewed“, „Abmelden“), ist das
                 # keine Stelle, und was danach kommt, gehört auch zu keiner.
                 letzter_link, offen = kennung, not (NAVIGATION.match(zeile) or NAVIGATION.match(_zeile(anker.get_text(" "))))
+                knopf = None if offen else anker
                 if offen:
                     bloecke.append((anker["href"], [zeile]))
+            elif not offen and knopf is not None and anker is not knopf and not NAVIGATION.match(zeile) \
+                    and kennung.startswith(("indeed:", "linkedin:", "glassdoor:", "jobleads:")):
+                # Indeed-Einzelvorschlag („aufgrund Ihres Profils …“): erst der Knopf „Job anzeigen“, darunter derselbe
+                # Link als Titel – die Karte beginnt beim Titel.
+                offen, knopf = True, None
+                bloecke.append((anker["href"], [zeile]))
             elif offen and not NAVIGATION.match(zeile):
                 bloecke[-1][1].append(zeile)
         elif anker is not None and NAVIGATION.match(zeile):
@@ -228,7 +236,10 @@ def stellen_aus_mail(roh: bytes) -> list[dict]:
         datum = parsedate_to_datetime(str(nachricht.get("Date"))).date().isoformat()
     except (TypeError, ValueError):
         datum = date.today().isoformat()
-    return [{**s, "datum": datum} for s in stellen_aus_html(teil.get_content(), portal)]
+    # Persönliche Einladung („aufgrund Ihres Profils könnte diese Stelle … passen“, match.indeed.com): Das Portal hat
+    # sie zum Profil ausgesucht – sie geht am Stichwortfilter vorbei, der Ortsfilter gilt weiter.
+    persoenlich = parseaddr(str(nachricht.get("From", "")))[1].lower().endswith("@match.indeed.com")
+    return [{**s, "datum": datum, **({"persoenlich": True} if persoenlich else {})} for s in stellen_aus_html(teil.get_content(), portal)]
 
 
 # --- Postfächer ----------------------------------------------------------------------------------------------------
@@ -353,6 +364,11 @@ def _hole(p: Postfach, kennwort: str, uidvalidity: str, letzte_uid: int, imap_kl
             pass
 
 
+# Ändert sich die Auswertung, werden die Mails der letzten Tage einmal neu gelesen (sonst blieben schon gelesene Mails
+# mit dem alten Ergebnis im Cache). 2: Indeed-Einzelvorschläge mit Knopf vor dem Titel.
+PARSER = 2
+
+
 def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=None) -> tuple[list[dict], list[str]]:
     """Stellen der letzten Tage aus allen gewählten Postfächern und Hinweise zu Ausfällen. Schon gelesene Mails liegen
     ausgewertet in der Datenbank, abgerufen werden nur neue."""
@@ -368,6 +384,8 @@ def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=None
             continue
         schluessel = f"cache.postfach.{p.benutzer}@{p.host}"
         gemerkt = json.loads(db.einstellung(conn, schluessel, "") or "{}")
+        if gemerkt and gemerkt.get("parser") != PARSER:
+            gemerkt = {}
         melde(f"Lese Job-Alerts aus {p.name}")
         try:
             validity, mails = _hole(p, kennwort, gemerkt.get("uidvalidity", ""), int(gemerkt.get("letzte_uid", 0)), imap_klasse)
@@ -379,7 +397,7 @@ def lies_alerts(conn: sqlite3.Connection, melde=lambda _: None, imap_klasse=None
         neu = [s for _, roh in mails for s in stellen_aus_mail(roh)]
         behalten = [s for s in alt + neu if s["datum"] >= grenze]
         letzte = max([u for u, _ in mails] + [int(gemerkt.get("letzte_uid", 0)) if alt else 0])
-        db.setze_einstellung(conn, schluessel, json.dumps({"uidvalidity": validity, "letzte_uid": letzte, "stellen": behalten,
+        db.setze_einstellung(conn, schluessel, json.dumps({"uidvalidity": validity, "letzte_uid": letzte, "stellen": behalten, "parser": PARSER,
                                                            "zeit": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False))
         if mails:
             db.protokolliere(conn, "Job-Alerts gelesen", f"{p.name}: {len(mails)} Mails, {len(neu)} Stellen")

@@ -244,7 +244,7 @@ def filtere_stellen(conn: sqlite3.Connection, treffer: list[dict], auftrag: Auft
     if not treffer:
         return [], ""
     woerter = stichwoerter(conn, begriffe)
-    passend = [t for t in treffer if not woerter or passt_stichwort(t["titel"], woerter)]
+    passend = [t for t in treffer if not woerter or t.get("persoenlich") or passt_stichwort(t["titel"], woerter)]
     fremd_beruf = len(treffer) - len(passend)
     zu_weit = unklar = 0
     bleiben = passend

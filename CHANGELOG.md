@@ -2,6 +2,15 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.15.2 – 2026-11-25
+
+### Behoben
+- **Job-Alerts: Indeeds Einzelvorschläge** („aufgrund Ihres Profils könnte diese Stelle passen“, Absender match.indeed.com) ergaben keine Stelle: Dort steht der Knopf „Job anzeigen“ vor dem Titel, und der Parser hielt die ganze Karte für Navigation. Jetzt beginnt die Karte beim Titel-Link derselben Stelle.
+- Ändert sich die Auswertung der Mails, liest die App die Alerts der letzten Tage einmal neu (Parser-Version im Cache); sonst blieben schon gelesene Mails mit dem alten Ergebnis stehen.
+
+### Geändert
+- Persönliche Einladungen eines Portals (Indeed-Einzelvorschlag zum Profil) gehen am Stichwortfilter vorbei; der Ortsfilter gilt weiter, Fernarbeit bleibt.
+
 ## 0.15.1 – 2026-11-24
 
 ### Neu
