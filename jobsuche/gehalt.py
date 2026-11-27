@@ -56,6 +56,17 @@ def _format(w: float) -> str:
 
 def erkenne(text: str) -> dict | None:
     """{"text": "48.000 €/Jahr", "jahr": 48000} oder None. Nimmt die erste plausible Angabe."""
+    gefunden = _finde(text)
+    return gefunden[0] if gefunden else None
+
+
+def untergrenze_jahr(text: str) -> int | None:
+    """Der niedrigste Wert der Spanne als Jahresbetrag: „55.000–70.000 €/Jahr“ → 55000, „4.000 €/Monat“ → 48000."""
+    gefunden = _finde(text)
+    return gefunden[1] if gefunden else None
+
+
+def _finde(text: str) -> tuple[dict, int] | None:
     if not text or not re.search(r"€|EUR|Euro", text, re.I):
         return None
     for muster in _MUSTER:
@@ -79,7 +90,7 @@ def erkenne(text: str) -> dict | None:
                 continue
             betrag = _format(von) if von == bis else f"{_format(von)}–{_format(bis)}"
             vorne = "ab " if re.match(r"\s*(?:ab|from)\b", m.group(0), re.I) else ("bis " if re.match(r"\s*(?:bis zu|up to)\b", m.group(0), re.I) else "")
-            return {"text": f"{vorne}{betrag} €/{zeit}", "jahr": round(jahr)}
+            return {"text": f"{vorne}{betrag} €/{zeit}", "jahr": round(jahr)}, round(min(von, bis) * _FAKTOR[zeit])
     return None
 
 

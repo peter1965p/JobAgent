@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - hängt von der Qt-Installation ab
     QWebEngineView = None
 
 from .. import suchen as gespeicherte
-from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, postfach, profil, quellen, rag, regeln, sicherung, suche, uebersicht, versand, wohnung
+from .. import __version__, agenda, anmeldung, angaben, config, cv, db, demo, einrichtung, firmen, ki, lernen, llm, mailkonten, nacht, person, portal, postfach, profil, quellen, rag, regeln, sicherung, suche, uebersicht, versand, wohnung
 from . import start, theme
 from .anmelden import AnmeldeFenster
 from .laufband import Laufband
@@ -1415,12 +1415,17 @@ class SucheSeite(Seite):
                                      "Zeugnis und schreibt die Mail. Gesendet wird erst nach deiner Freigabe.")
         self.knopf_inhaber = knopf("Übernehmen und Inhaber finden", self.inhaber_finden)
         self.knopf_nur = knopf("Nur übernehmen", self.uebernehmen)
+        self.knopf_portal = knopf("Über Bewerbungslink …", self.bewerbungslink)
+        self.knopf_portal.setToolTip("Für Stellen mit Bewerbungsformular (z. B. Personio, oft der „Bewerben“-Knopf bei LinkedIn): "
+                                     "Link einfügen. Die App liest Stelle und Formular, schreibt das Anschreiben und legt eine "
+                                     "Mappe unter Dokumente/Bewerbungen an, mit Lesezeichen zum Ausfüllen. Senden machst du selbst.")
         self.knopf_sofort.setEnabled(False)
         self.knopf_inhaber.setEnabled(False)
         self.knopf_nur.setEnabled(False)
         details.lage.addWidget(self.knopf_sofort)
         details.lage.addWidget(self.knopf_inhaber)
         details.lage.addWidget(self.knopf_nur)
+        details.lage.addWidget(self.knopf_portal)
         unten.addWidget(details)
         lage.addLayout(unten, 1)
         self.treffer: dict[int, dict] = {}
@@ -1764,6 +1769,33 @@ class SucheSeite(Seite):
         if sid != gespeicherte.ZULETZT:
             gespeicherte.aendern(self.conn, sid, nachts=an)
             self._fuelle_gespeicherte()
+
+    def bewerbungslink(self):
+        """Link aus der Zwischenablage vorschlagen, wenn es ein Portal-Link ist."""
+        ablage = QGuiApplication.clipboard().text().strip()
+        url, ok = QInputDialog.getText(self, "Bewerbung über Bewerbungslink",
+                                       "Link zum Bewerbungsformular (z. B. …jobs.personio.de/job/…):",
+                                       text=ablage if portal.erkenne(ablage) else "")
+        url = url.strip()
+        if not ok or not url:
+            return
+        if not portal.erkenne(url):
+            return self.f.melde("Diesen Link kenne ich noch nicht. Unterstützt wird bisher Personio (…jobs.personio.de/job/…).")
+        zeile = zeilen_id(self.tab)
+        treffer = self.treffer.get(zeile) if zeile is not None else None
+        gehalt_text = " ".join(str(treffer.get(k) or "") for k in ("gehalt", "gehalt_roh")) if treffer else ""
+        modell = self.f.modell()
+        self.f.starte("Bewerbungsmappe", lambda conn, fort: portal.bewirb(conn, url, modell, melde=fort, gehalt_text=gehalt_text),
+                      nach=self.mappe_fertig)
+
+    def mappe_fertig(self, ergebnis):
+        teile = [f"Mappe für {ergebnis['ausschreibung'].firma} liegt in {ergebnis['ordner']}."]
+        if ergebnis.get("eignung"):
+            teile.append(ki.eignung_text(ergebnis["eignung"]))
+        teile.append("Noch offen: " + ", ".join(ergebnis["offen"]) if ergebnis["offen"] else "Alle Pflichtfelder haben einen Wert.")
+        teile.append("Lesezeichen.txt füllt das Formular aus, hochladen und senden machst du.")
+        self.f.melde(" ".join(teile))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(ergebnis["ordner"])))
 
     def _gewaehlt(self):
         zeile = zeilen_id(self.tab)

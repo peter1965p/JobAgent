@@ -2,6 +2,12 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.17.0 – 2026-11-27
+
+### Neu
+- **Bewerbung über Bewerbungslink (Personio):** Auf der Suchseite „Über Bewerbungslink …“ – den Link zum Formular einfügen (oft der „Bewerben“-Knopf bei LinkedIn). Die App liest Stelle und Formularfelder, übernimmt die Firma mit Anzeige, prüft die Eignung, schreibt das Anschreiben über die geprüfte Pipeline (nur belegte Fakten) und legt unter `~/Dokumente/Bewerbungen/<Firma>_<Stelle>` eine Mappe an: Anschreiben (PDF + DOCX), Lebenslauf für die Stelle, Zeugnisse, Stellentext, Formularwerte und ein Lesezeichen, das die Felder im Browser ausfüllt. Hochladen und Senden bleiben beim Menschen.
+- **Formularregeln:** „Verfügbar ab“ = ab sofort (Einstellung `bewerbung.verfuegbar_ab`), Gehaltsvorstellung = niedrigster Wert der ausgeschriebenen Spanne plus 2.000 € (`bewerbung.gehalt_aufschlag`); ohne Spanne bleibt das Feld offen. Unbekannte Pflichtfelder werden nicht geraten, sondern als offen gemeldet.
+
 ## 0.16.1 – 2026-11-27
 
 ### Neu

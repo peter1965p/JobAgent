@@ -837,3 +837,26 @@ def test_suche_speichern_laden_ergebnis_gehalt_und_neu(app, f, monkeypatch):
     # Neustart der Seite: das Ergebnis ist noch da
     s.treffer = {}; s.vorbelegt = False; s.aktualisieren()
     assert s.tab.rowCount() == 2
+
+
+def test_bewerbungslink_baut_mappe_und_oeffnet_den_ordner(app, f, monkeypatch, tmp_path):
+    from jobsuche import portal
+    f.zeige_seite(fenster.SucheSeite)
+    s = f.stapel.currentWidget()
+    link = "https://beispiel.jobs.personio.de/job/42/apply?display=de"
+    monkeypatch.setattr(fenster.QInputDialog, "getText", staticmethod(lambda *a, **k: (link, True)))
+    geoeffnet, aufrufe = [], []
+    monkeypatch.setattr(fenster.QDesktopServices, "openUrl", staticmethod(lambda u: geoeffnet.append(u.toLocalFile())))
+    a = portal.Ausschreibung("Personio", "Dev (m/w/d)", "Beispiel GmbH", "Remote", "", "", "", [], "personio:beispiel:42")
+
+    def bewirb(conn, url, modell, melde=lambda _: None, gehalt_text=""):
+        aufrufe.append(url)
+        return {"ordner": tmp_path, "offen": ["Gehaltsvorstellung"], "ausschreibung": a, "eignung": None, "werte": {}, "dateien": []}
+    monkeypatch.setattr(portal, "bewirb", bewirb)
+    s.bewerbungslink()
+    warte(app, f)
+    assert aufrufe == [link] and geoeffnet == [str(tmp_path)]
+    assert "Beispiel GmbH" in f.meldungen[-1] and "Noch offen: Gehaltsvorstellung" in f.meldungen[-1]
+    monkeypatch.setattr(fenster.QInputDialog, "getText", staticmethod(lambda *a, **k: ("https://www.linkedin.com/jobs/view/1", True)))
+    s.bewerbungslink()
+    assert "Personio" in f.meldungen[-1] and aufrufe == [link]
