@@ -331,6 +331,7 @@ SEITEN.suche = async (ziel) => {
     begriffe: el("input", { value: w.begriffe, placeholder: "Berufe: werden aus deinen Fakten abgeleitet", maxlength: 500 }),
     land: el("select", {}, Object.entries(d.laender).map(([c, n]) => el("option", { value: c, selected: c === w.land ? "selected" : null }, n))),
     bundesland: el("select", {}, el("option", { value: "" }, "Umkreis um den Ort"),
+      el("option", { value: "Deutschland", selected: w.bundesland === "Deutschland" ? "selected" : null }, "Ganz Deutschland"),
       d.bundeslaender.map((b) => el("option", { value: b, selected: b === w.bundesland ? "selected" : null }, "Ganz " + b))),
     ort: el("input", { value: w.ort, placeholder: "Ort oder Region, leer: ganzes Land", maxlength: 120 }),
     umkreis: el("select", {}, [10, 25, 50, 100, 200, 0].map((k) => el("option", { value: k, selected: k === w.umkreis ? "selected" : null }, k ? k + " km" : "Ganze Region"))),

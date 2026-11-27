@@ -703,6 +703,10 @@ def test_bundesland_auswahl_und_fortschrittsbalken(app, f):
     assert s.wo.text() == "Niedersachsen" and s.umkreis.currentData() == 0 and not s.wo.isEnabled()
     s._waehle(s.gebiet, "")
     assert s.wo.text() == "" and s.wo.isEnabled() and s.umkreis.currentData() == 50
+    s._waehle(s.gebiet, fenster.GANZ_DE)  # ganz Deutschland: wie ein Bundesland, nur das ganze Land
+    assert s.gebiet.currentText() == "Ganz Deutschland" and s.wo.text() == "Deutschland" and s.umkreis.currentData() == 0
+    s._waehle(s.gebiet, "")
+    assert s.wo.text() == "" and s.wo.isEnabled()
     f._zeige_balken("Orte bestimmen: 12 von 40")
     assert f.balken.maximum() == 40 and f.balken.value() == 12 and f.balken.isVisibleTo(f)
     f._zeige_balken("Suche: Jobbörse")

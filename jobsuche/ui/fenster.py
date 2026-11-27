@@ -41,6 +41,9 @@ KATEGORIE_TEXT = {"positionierung": "Positionierung", "erfahrung": "Erfahrung", 
                   "technik": "Technik", "praktisch": "Praktisch / physisch", "suche": "Suche"}
 
 
+# „Ganz Deutschland“: wie ein Bundesland, nur mit dem ganzen Land als Gebiet (Ortsdienst und Landesgrenze)
+GANZ_DE = "Deutschland"
+
 class Signale(QObject):
     """Lebt so lange wie das Hauptfenster. So überleben die Meldungen das Ende einer Aufgabe."""
 
@@ -1252,9 +1255,10 @@ class SucheSeite(Seite):
         # Ganzes Bundesland: Ort und Umkreis ergeben sich daraus, gefiltert wird über die echte Landesgrenze.
         self.gebiet = QComboBox()
         self.gebiet.addItem("Umkreis um den Ort", "")
+        self.gebiet.addItem("Ganz Deutschland", GANZ_DE)
         for name in quellen.BUNDESLAENDER:
             self.gebiet.addItem(f"Ganz {name}", name)
-        self.gebiet.setToolTip("Sucht im ganzen Bundesland. Die km zeigen dann die Fahrstrecke ab deinem Wohnort aus dem Profil.")
+        self.gebiet.setToolTip("Sucht in ganz Deutschland oder im ganzen Bundesland. Die km zeigen dann die Fahrstrecke ab deinem Wohnort aus dem Profil.")
         self.gebiet.currentIndexChanged.connect(self._gebiet_gewaehlt)
         self.land.currentIndexChanged.connect(self._land_gewaehlt)
         self.branche = QComboBox()
@@ -1454,7 +1458,7 @@ class SucheSeite(Seite):
         if land:
             self.wo.setText(land)
             self._waehle(self.umkreis, 0)
-        elif self.wo.text().strip() in quellen.BUNDESLAENDER:
+        elif self.wo.text().strip() in (GANZ_DE, *quellen.BUNDESLAENDER):
             self.wo.clear()
             self._waehle(self.umkreis, 50)
         self.wo.setEnabled(not land)

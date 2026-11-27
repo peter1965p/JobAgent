@@ -2,6 +2,11 @@
 
 Versionen nach [Semantic Versioning](https://semver.org/lang/de/). Die laufende Version steht in `jobsuche/__init__.py` und unten links in der App.
 
+## 0.16.1 – 2026-11-27
+
+### Neu
+- **Ganz Deutschland:** Die Gebietsauswahl der Suche (Desktop und Web) hat neben den Bundesländern jetzt „Ganz Deutschland“. Gesucht wird im ganzen Land, gefiltert über die echte Landesgrenze; die km zeigen wie bei den Bundesländern die Strecke ab dem Wohnort.
+
 ## 0.16.0 – 2026-11-25
 
 ### Neu

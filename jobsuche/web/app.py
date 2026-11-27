@@ -47,6 +47,9 @@ MAX_UPLOAD = 10 * 1024 * 1024
 
 
 # --- Eingaben -----------------------------------------------------------------------------------------------------------
+# Gebietsauswahl: ganz Deutschland oder ein ganzes Bundesland (Ort = Gebietsname, Umkreis 0, gefiltert über die echte Grenze)
+GEBIETE = ("Deutschland", *quellen.BUNDESLAENDER)
+
 class AnmeldenIn(BaseModel):
     email: str = Field(max_length=254)
     passwort: str = Field(max_length=256)
@@ -552,15 +555,15 @@ def erstelle_app(server: dict | None = None, schluessel: bytes | None = None, da
         woerter = dict.fromkeys(w.strip() for w in daten_in.ausschluss.split(",") if w.strip())
         db.setze_einstellung(conn, "suche.ausschluss", ", ".join(woerter))
         db.setze_einstellung(conn, "suche.stichwoerter", ", ".join(suche.bereinige_stichwoerter(daten_in.stichwoerter.split(","))))
-        ort = daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.ort.strip()
-        umkreis = 0 if daten_in.bundesland in quellen.BUNDESLAENDER else daten_in.umkreis
+        ort = daten_in.bundesland if daten_in.bundesland in GEBIETE else daten_in.ort.strip()
+        umkreis = 0 if daten_in.bundesland in GEBIETE else daten_in.umkreis
         auftrag = suche.Auftrag(daten_in.begriffe, ort, daten_in.land if daten_in.land in quellen.LAENDER else "de", umkreis,
                                 daten_in.branche if daten_in.branche in quellen.BRANCHEN else "", gewaehlt, searxng,
                                 daten_in.arbeitszeit if daten_in.arbeitszeit in suche.ARBEITSZEIT else "", daten_in.nur_ki,
                                 daten_in.max_tage, daten_in.aufgefrischte, daten_in.remote if daten_in.remote in suche.REMOTE else "")
         for name, wert in (("begriffe", auftrag.begriffe), ("ort", auftrag.ort), ("land", auftrag.land),
                            ("umkreis", str(auftrag.umkreis)), ("branche", auftrag.branche), ("quellen", ",".join(gewaehlt)),
-                           ("arbeitszeit", auftrag.arbeitszeit), ("bundesland", daten_in.bundesland if daten_in.bundesland in quellen.BUNDESLAENDER else ""),
+                           ("arbeitszeit", auftrag.arbeitszeit), ("bundesland", daten_in.bundesland if daten_in.bundesland in GEBIETE else ""),
                            ("nur_ki", "1" if auftrag.nur_ki else "0"), ("max_tage", str(auftrag.max_tage)),
                            ("aufgefrischte", "1" if auftrag.aufgefrischte else "0"), ("remote", auftrag.remote),
                            ("max_treffer", str(daten_in.max_treffer))):
